@@ -19,10 +19,10 @@ Here is the complete motion formula:
 $$f\left( t, p \right)=\frac{1}{2}\left[ 1+\text{sgn} (x)\,\frac{B\left( {1}/{2}\;,p+1,{t^2} \right)}{B\left( {1}/{2}\;,p+1 \right)} \right],$$
 
 $$motionTime(robotVmax, robotAmax,motionRange)=\\
-max\left[\frac{2*3^{3/4}}{\sqrt{\pi}}*\sqrt\frac{motionRange}{robotAmax},\frac{32}{5\pi}*\frac{motionRange}{robotVmax}\right],$$
+max\left[\frac{2\cdot3^{3/4}}{\sqrt{\pi}}\cdot\sqrt\frac{motionRange}{robotAmax},\frac{32}{5\pi}\cdot\frac{motionRange}{robotVmax}\right],$$
 
 $$position(t,robotVmax,robotAmax,motionRange)=\\
-motionRange*f\left(\frac{2 t}{motionTime}-1,2.5\right),$$
+motionRange\cdot f\left(\frac{2 t}{motionTime}-1,2.5\right),$$
 
 where *sgn(x)* is Sign function, numerator and denominator *𝐵s* are the incomplete and complete beta functions, respectively (that's where `beta` comes from in the name), *robotAmax* is the maximum acceleration and *motionRange* is the absolute value of the motion (from start to end).
 
@@ -309,7 +309,7 @@ $$robotVmax=\frac{2\frac{16}{5\pi}motionRange}{time}$$
 
 Hence,
 
-$$time = \frac{32}{5 \pi}*\frac{motionRange}{robotVmax}$$
+$$time = \frac{32}{5 \pi}\cdot\frac{motionRange}{robotVmax}$$
 
 ### 2. Motion time from the maximum acceleration constraint
 
@@ -335,14 +335,14 @@ $$\text{robotAmax}=\frac{4\frac{3\sqrt{3}}{\pi }\text{motionRange}}{time^2}$$
 
 Hence,
 
-$$time=\frac{2*3^{3/4}}{\sqrt{\pi}}*\sqrt\frac{motionRange}{robotAmax}$$
+$$time=\frac{2\cdot3^{3/4}}{\sqrt{\pi}}\cdot\sqrt\frac{motionRange}{robotAmax}$$
 
 ### 3. Motion time with both constraints
 
 To consider both maximum velocity and maximum acceleration constraints we have to take the maximum of the above motion times:
 
 $$motionTime=
-max\left[\frac{2*3^{3/4}}{\sqrt{\pi}}*\sqrt\frac{motionRange}{robotAmax},\frac{32}{5\pi}*\frac{motionRange}{robotVmax}\right],$$
+max\left[\frac{2\cdot3^{3/4}}{\sqrt{\pi}}\cdot\sqrt\frac{motionRange}{robotAmax},\frac{32}{5\pi}\cdot\frac{motionRange}{robotVmax}\right],$$
 
 In the future I may add a maximum jerk constraint.
 
@@ -351,7 +351,7 @@ In the future I may add a maximum jerk constraint.
 We have to rescale *t* in $f(t,2.5)$ in such a way that the motion would start at $t=0$ and end at $t=motionTime$. Additionally we have to rescale the value of *f* to go from 0 to *motionRange*. After rescaling we get:
 
 $$position(t,robotAmax,motionRange)=\\
-motionRange*f(\frac{2 t}{motionTime(robotAmax,motionRange)}-1,2.5)$$
+motionRange\cdot f(\frac{2 t}{motionTime(robotAmax,motionRange)}-1,2.5)$$
 
 ## Example robot motions limited by acceleration
 
