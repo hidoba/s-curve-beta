@@ -24,7 +24,7 @@ max\left[\frac{2\cdot3^{3/4}}{\sqrt{\pi}}\cdot\sqrt\frac{motionRange}{robotAmax}
 $$position(t,robotVmax,robotAmax,motionRange)=\\
 motionRange\cdot f\left(\frac{2 t}{motionTime}-1,2.5\right),$$
 
-where *sgn(x)* is Sign function, numerator and denominator *𝐵s* are the incomplete and complete beta functions, respectively (that's where `beta` comes from in the name), *robotAmax* is the maximum acceleration and *motionRange* is the absolute value of the motion (from start to end).
+where *sgn(x)* is Sign function, numerator and denominator *𝐵s* are the incomplete and complete beta functions, respectively (that's where `beta` comes from in the name), *robotVmax* is the maximum velocity, *robotAmax* is the maximum acceleration and *motionRange* is the absolute value of the motion (from start to end).
 
 Here are 2 examples of motion planning with $motionRange=2$:
 
