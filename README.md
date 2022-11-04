@@ -130,7 +130,7 @@ from scurvebeta import scurvebetatrue
 print(scurvebetatrue.sCurve_true(2.3,15,-1,5))
 
 import scurvebeta as scb
-print(scurvebeta.sCurve(2.3,15,-1,5))
+print(scb.sCurve(2.3,15,-1,5))
 ```
 ```
 -0.8849490453964555
@@ -158,13 +158,13 @@ def interpolatedFunctionArray():
 print(timeit.timeit('trueFunction()',number=100000, setup="from __main__ import trueFunction"))
 # 0.4408080680000239
 
-timeit.timeit('trueFunctionArray()',number=1, setup="from __main__ import trueFunctionArray")
+print(timeit.timeit('trueFunctionArray()',number=1, setup="from __main__ import trueFunctionArray"))
 # 0.4047970910000913
 
-timeit.timeit('interpolatedFunction()',number=100000, setup="from __main__ import interpolatedFunction")
+print(timeit.timeit('interpolatedFunction()',number=100000, setup="from __main__ import interpolatedFunction"))
 # 0.381616509999958
 
-timeit.timeit('interpolatedFunctionArray()',number=1, setup="from __main__ import interpolatedFunctionArray")
+print(timeit.timeit('interpolatedFunctionArray()',number=1, setup="from __main__ import interpolatedFunctionArray"))
 # 0.0019440340000755896
 ```
 
