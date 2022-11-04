@@ -32,9 +32,9 @@ Here are 2 examples of motion planning with $motionRange=2$:
 
 **The motion curve always has the same shape, while horizontal and vertical scales change.** This property has the following benefits:
 
-1. The curve (function $f(t,2.5)$ for $-1\le t \le 1$) can be precomputed, so instead of calculating Beta functions each time it's possible to do the linear interpolation of the precomputed points.
+1. The curve (function $f(t,2.5)$ for $-1\le t \le 1$) can be precomputed, so instead of calculating Beta functions each time it's possible to do the linear interpolation of the precomputed points. They can be programmed in a microcontroller.
 2. The code is much simpler (<20 lines).
-3. Movements appear more natural and human-like.
+3. The movements appear more natural and human-like.
 
 The disadvantages are:
 1. **The movements may take longer time to complete for large motions.**
@@ -115,8 +115,8 @@ def plotMotion(max_velocity, max_acceleration, x0, x1):
     plt.show()
 
 # Please note that if you need more accurate velocity / acceleration
-# you should better use the 'true' version of function instead of the 'interpolated' one.
-# Pay attention at the jerk on the second plot, the sawteeth are because of imprecision
+# you should better use the 'true' version of the function instead of the 'interpolated' one.
+# Pay attention at the jerk on the second plot, the sawteeth are because of the imprecision
 # of very small changes of the third derivative. If you just need the position,
 # interpolated function should be just fine.
 plotMotion(6, 3, -3, 10)
@@ -357,7 +357,7 @@ In the future I may add a maximum jerk constraint.
 We have to rescale *t* in $f(t,2.5)$ in such a way that the motion would start at $t=0$ and end at $t=motionTime$. Additionally we have to rescale the value of *f* to go from 0 to *motionRange*. After rescaling we get:
 
 $$position(t,robotAmax,motionRange)=\\
-motionRange\cdot f(\frac{2 t}{motionTime(robotAmax,motionRange)}-1,2.5)$$
+motionRange\cdot f(\frac{2 t}{motionTime}-1,2.5)$$
 
 ## Example robot motions limited by acceleration
 
