@@ -28,7 +28,7 @@ where *sgn(x)* is Sign function, numerator and denominator *𝐵s* are the incom
 
 Here are 2 examples of motion planning with $motionRange=2$:
 
-![](img/plot1.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot1.png)
 
 **The motion curve always has the same shape, while horizontal and vertical scales change.** This property has the following benefits:
 
@@ -116,8 +116,8 @@ def plotMotion(max_velocity, max_acceleration, x0, x1):
 plotMotion(6, 3, -3, 10)
 plotMotion(2, 3, -3, 10)
 ```
-![](img/pyplot1.png)
-![](img/pyplot2.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/pyplot1.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/pyplot2.png)
 
 ## Interpolated vs True function
 
@@ -207,8 +207,8 @@ def plotMotionTrue(max_velocity, max_acceleration, x0, x1):
 plotMotionTrue(6, 3, -3, 10)
 plotMotionTrue(2, 3, -3, 10)
 ```
-![](img/pyplot3.png)
-![](img/pyplot4.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/pyplot3.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/pyplot4.png)
 
 # Multiple axes synchronization
 
@@ -254,7 +254,7 @@ Animate[
  {param, 2.00001, 5, 0.15}]
 ```
 
-![](img/plot2.gif)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot2.gif)
 
 Calculating largest jerks for different values of the parameter $p$:
 
@@ -271,7 +271,7 @@ ListLinePlot[
  AxesLabel -> {"p", "max jerk"}]
 ```
 
-![](img/plot3.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot3.png)
 
 The best value of the parameter $p$ happens to be 2.5, where the max absolute jerk is the smallest.
 
@@ -287,7 +287,7 @@ Show[
  ]
 ```
 
-![](img/plot4.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot4.png)
 
 Values of $2\le p<2.5$ can shorten the robot motion time a little bit at the cost of increased maximum jerk hence increased robot vibrations at the beginning and at the end of the motion. I have decided not to implement this at the moment.
 
@@ -355,7 +355,7 @@ motionRange*f(\frac{2 t}{motionTime(robotAmax,motionRange)}-1,2.5)$$
 
 ## Example robot motions limited by acceleration
 
-![](img/plot5.png)
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot5.png)
 
 ## License
 
