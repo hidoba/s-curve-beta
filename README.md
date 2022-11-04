@@ -16,7 +16,7 @@ Based on the answer of Cye Waldman (https://math.stackexchange.com/a/2403818) I 
 
 Here is the complete motion formula:
 
-$$f\left( t, p \right)=\frac{1}{2}\left[ 1+\text{sgn} (x)\,\frac{B\left( {1}/{2}\;,p+1,{t^2} \right)}{B\left( {1}/{2}\;,p+1 \right)} \right],$$
+$$f\left( t, p \right)=\frac{1}{2}\left[ 1+\text{sgn} (x)\,\frac{B\left( {1}/{2}, p+1,{t^2} \right)}{B\left( {1}/{2}, p+1 \right)} \right],$$
 
 $$motionTime(robotVmax, robotAmax,motionRange)=\\
 max\left[\frac{2\cdot3^{3/4}}{\sqrt{\pi}}\cdot\sqrt\frac{motionRange}{robotAmax},\frac{32}{5\pi}\cdot\frac{motionRange}{robotVmax}\right],$$
