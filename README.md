@@ -5,7 +5,7 @@ This file is also available as `README.nb` *Mathematica* notebook that replicate
 # `s-curve-beta`: Efficient Python implementation of the smoothest S-curve robot motion planner ever
 
 1. It's 2022 and you're still using a trapezoid motion profile?
-2. Your robot is vibrating like a vacuum machine?
+2. Your robot dog is vibrating like a washing machine?
 3. Tired of the mess in the code because of the multiple piecewise time regions?
 4. Want a simple single-formula smooth motion profile?
 5. Want an S-curve implementation that literally fits in 20 lines of code?
