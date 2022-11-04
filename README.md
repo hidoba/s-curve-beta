@@ -12,7 +12,7 @@ This file is also available as `README.nb` *Mathematica* notebook that replicate
 
 If you answer "yes" to any of the above, read on.
 
-Based on the answer of Cuye Waldman (https://math.stackexchange.com/a/2403818) I present this Python package to calculate the S-curve for the robot motion planning with a given maximum velocity and acceleration with a single formula.
+Based on the answer of Cye Waldman (https://math.stackexchange.com/a/2403818) I present this Python package to calculate the S-curve for the robot motion planning with a given maximum velocity and acceleration with a single formula.
 
 Here is the complete motion formula:
 
@@ -226,7 +226,7 @@ Below derivations include *Mathematica* code that can be used to replicate them.
 
 This file is also available as `README.nb` *Mathematica* notebook that replicates all derivations and plots.
 
-The original *f* function comes from the integration of the [superparabola](https://en.wikipedia.org/wiki/Superparabola), [done](https://math.stackexchange.com/a/2403818) by Cuye Waldman. We can prove that his integration is correct:
+The original *f* function comes from the integration of the [superparabola](https://en.wikipedia.org/wiki/Superparabola), [done](https://math.stackexchange.com/a/2403818) by Cye Waldman. We can prove that his integration is correct:
 
 ```mathematica
 f[x_, p_] := 
