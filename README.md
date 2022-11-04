@@ -357,7 +357,7 @@ In the future I may add a maximum jerk constraint.
 We have to rescale *t* in $f(t,2.5)$ in such a way that the motion would start at $t=0$ and end at $t=motionTime$. Additionally we have to rescale the value of *f* to go from 0 to *motionRange*. After rescaling we get:
 
 $$position(t,robotAmax,motionRange)=\\
-motionRange\cdot f(\frac{2 t}{motionTime}-1,2.5)$$
+motionRange\cdot f \left(\frac{2 t}{motionTime}-1,2.5 \right)$$
 
 ## Example robot motions limited by acceleration
 
