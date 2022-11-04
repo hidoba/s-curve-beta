@@ -32,8 +32,14 @@ Here are 2 examples of motion planning with $motionRange=2$:
 
 **The motion curve always has the same shape, while horizontal and vertical scales change.** This property has the following benefits:
 
-1. The maximum jerk is smaller compared to the case where you accelerate to the maximum velocity, stay there for a while and then decelerate.
-2. The curve (function $f(t,2.5)$ for $-1\le t \le 1$) can be precomputed, so instead of calculating Beta functions each time it's possible to do the linear interpolation of the precomputed points.
+1. The curve (function $f(t,2.5)$ for $-1\le t \le 1$) can be precomputed, so instead of calculating Beta functions each time it's possible to do the linear interpolation of the precomputed points.
+2. The code is much simpler (<20 lines).
+3. Movements appear more natural and human-like.
+
+The disadvantages are:
+1. **The movements may take longer time to complete for large motions.**
+2. You can't simply put a linear area in the middle of the curve, that would introduce discontinuity and possibly large values in jerk.
+
 
 # Installation
 
