@@ -310,39 +310,43 @@ def plot_curve_segment_visualization():
 
 
 def plot_motion_continuation():
-    """Demonstrate smooth motion continuation (chaining motions)."""
-    fig, axs = plt.subplots(3, 1, figsize=(12, 10))
+    """Demonstrate PERFECT motion continuation to ANY target with smooth τ(t)."""
+    from scurvebeta.generalized import continue_motion, evaluate_smooth_motion
+
+    fig, axs = plt.subplots(4, 1, figsize=(12, 12))
 
     robotVmax, robotAmax = 6, 3
 
-    # First motion: rest to moving (end with v=2)
+    # First motion: rest to moving (end mid-curve)
     plan1 = plan_motion(0, 10, v0=0, v1=2, robotVmax=robotVmax, robotAmax=robotAmax)
     T1 = plan1['T']
 
     t1 = np.linspace(0, T1, 301)
     pos1, vel1, acc1 = evaluate_motion(plan1, t1)
 
-    # Get actual end velocity from first motion
-    v_end1 = plan1['v1_actual']
-    a_end1 = plan1['a1_actual']
-
     print(f"Motion 1: 0 -> 10")
     print(f"  Duration: {T1:.3f}s")
-    print(f"  End velocity (actual): {v_end1:.4f}")
-    print(f"  End acceleration (actual): {a_end1:.4f}")
+    print(f"  End: v={plan1['v1_actual']:.4f}, a={plan1['a1_actual']:.4f}")
 
-    # Second motion: continue from end state to rest at position 15
-    plan2 = plan_motion(10, 15, v0=v_end1, v1=0, a0=a_end1, robotVmax=robotVmax, robotAmax=robotAmax)
+    # Continue to ARBITRARY target with PERFECT continuity using smooth τ(t)
+    x_target = 18  # User's choice - not constrained by physics!
+    plan2 = continue_motion(plan1, x_target=x_target, robotVmax=robotVmax, robotAmax=robotAmax)
     T2 = plan2['T']
 
     t2 = np.linspace(0, T2, 301)
-    pos2, vel2, acc2 = evaluate_motion(plan2, t2)
+    pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
 
-    print(f"\nMotion 2: 10 -> 15 (continuing from motion 1)")
+    print(f"\nMotion 2 (smooth continuation): {plan2['x0']:.2f} -> {plan2['x1']:.2f}")
     print(f"  Duration: {T2:.3f}s")
-    print(f"  Start velocity (actual): {plan2['v0_actual']:.4f}")
-    print(f"  Start velocity (requested): {plan2['v0_requested']:.4f}")
-    print(f"  Velocity continuity error: {abs(v_end1 - plan2['v0_actual']):.6f}")
+    print(f"  Start: v={plan2['v0_actual']:.4f}, a={plan2['a0_actual']:.4f}")
+
+    # Check continuity
+    v_jump = abs(plan2['v0_actual'] - plan1['v1_actual'])
+    a_jump = abs(plan2['a0_actual'] - plan1['a1_actual'])
+    print(f"\nCONTINUITY CHECK:")
+    print(f"  Velocity jump: {v_jump:.12f}")
+    print(f"  Acceleration jump: {a_jump:.12f}")
+    print(f"  PERFECT CONTINUITY: {v_jump < 1e-6 and a_jump < 1e-6}")
 
     # Combined timeline
     t_combined = np.concatenate([t1, T1 + t2[1:]])
@@ -350,27 +354,34 @@ def plot_motion_continuation():
     vel_combined = np.concatenate([vel1, vel2[1:]])
     acc_combined = np.concatenate([acc1, acc2[1:]])
 
+    # Compute jerk for visualization
+    dt = t_combined[1] - t_combined[0]
+    jerk_combined = np.gradient(acc_combined, dt)
+
     # Plot position
     axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
-    axs[0].axvline(x=T1, color='r', linestyle='--', alpha=0.5, label='Motion 1→2 transition')
+    axs[0].axvline(x=T1, color='r', linestyle='--', alpha=0.5, label='Transition (perfect continuity)')
     axs[0].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=80, zorder=5)
     axs[0].set_ylabel('Position')
-    axs[0].set_title('Smooth Motion Continuation: 0→10 (moving end) → 15 (rest)')
+    axs[0].set_title(f'PERFECT Motion Continuation to ANY Target (x={x_target})')
     axs[0].legend()
     axs[0].grid(True, alpha=0.3)
     axs[0].annotate('Start\n(rest)', (0, pos1[0]), textcoords="offset points", xytext=(10, 10), fontsize=9)
-    axs[0].annotate('Transition\n(moving)', (T1, pos1[-1]), textcoords="offset points", xytext=(10, -20), fontsize=9)
-    axs[0].annotate('End\n(rest)', (T1+T2, pos2[-1]), textcoords="offset points", xytext=(-30, 10), fontsize=9)
+    axs[0].annotate(f'Transition\n(v={plan1["v1_actual"]:.2f})', (T1, pos1[-1]),
+                    textcoords="offset points", xytext=(10, -25), fontsize=9)
+    axs[0].annotate(f'End\n(rest, x={x_target})', (T1+T2, pos2[-1]),
+                    textcoords="offset points", xytext=(-50, 10), fontsize=9)
 
     # Plot velocity
     axs[1].plot(t_combined, vel_combined, 'g-', linewidth=2)
     axs[1].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
     axs[1].axhline(y=robotVmax, color='orange', linestyle='--', alpha=0.5, label=f'Vmax={robotVmax}')
-    axs[1].axhline(y=-robotVmax, color='orange', linestyle='--', alpha=0.5)
     axs[1].scatter([0, T1, T1+T2], [vel1[0], vel1[-1], vel2[-1]], color='red', s=80, zorder=5)
     axs[1].set_ylabel('Velocity')
     axs[1].legend()
     axs[1].grid(True, alpha=0.3)
+    axs[1].annotate('NO JUMP', (T1, vel1[-1]), textcoords="offset points",
+                    xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
 
     # Plot acceleration
     axs[2].plot(t_combined, acc_combined, 'orange', linewidth=2)
@@ -378,14 +389,115 @@ def plot_motion_continuation():
     axs[2].axhline(y=robotAmax, color='r', linestyle='--', alpha=0.5, label=f'Amax={robotAmax}')
     axs[2].axhline(y=-robotAmax, color='r', linestyle='--', alpha=0.5)
     axs[2].scatter([0, T1, T1+T2], [acc1[0], acc1[-1], acc2[-1]], color='red', s=80, zorder=5)
-    axs[2].set_xlabel('Time (s)')
     axs[2].set_ylabel('Acceleration')
     axs[2].legend()
     axs[2].grid(True, alpha=0.3)
+    axs[2].annotate('NO JUMP', (T1, acc1[-1]), textcoords="offset points",
+                    xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
+
+    # Plot jerk
+    axs[3].plot(t_combined, jerk_combined, 'purple', linewidth=2)
+    axs[3].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+    axs[3].set_xlabel('Time (s)')
+    axs[3].set_ylabel('Jerk')
+    axs[3].grid(True, alpha=0.3)
+    axs[3].annotate('NO JUMP (smooth τ(t)!)', (T1, jerk_combined[len(t1)]),
+                    textcoords="offset points", xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
 
     plt.tight_layout()
     plt.savefig('/home/user/s-curve-beta/img/motion_continuation.png', dpi=150, bbox_inches='tight')
     print("\nSaved: img/motion_continuation.png")
+    plt.close()
+
+
+def plot_direction_reversal():
+    """Demonstrate smooth direction reversal to reach any target."""
+    from scurvebeta.generalized import continue_motion, evaluate_smooth_motion
+
+    fig, axs = plt.subplots(4, 1, figsize=(12, 12))
+
+    robotVmax, robotAmax = 6, 3
+
+    # Start moving right
+    plan1 = plan_motion(0, 8, v0=0, v1=2.5, robotVmax=robotVmax, robotAmax=robotAmax)
+    T1 = plan1['T']
+
+    print("=== Direction Reversal with Perfect Continuity ===")
+    print(f"Initial motion: 0 -> 8 (ending with v={plan1['v1_actual']:.2f})")
+
+    # Want to go BACK to x=3 (to the LEFT of where we'll end up!)
+    x_target = 3
+    plan2 = continue_motion(plan1, x_target=x_target, robotVmax=robotVmax, robotAmax=robotAmax)
+    T2 = plan2['T']
+
+    print(f"\nSmooth continuation to x={x_target}:")
+    print(f"  Motion 2: {plan2['x0']:.2f} -> {plan2['x1']:.2f}, T={T2:.3f}s")
+
+    # Check continuity
+    v_jump = abs(plan2['v0_actual'] - plan1['v1_actual'])
+    a_jump = abs(plan2['a0_actual'] - plan1['a1_actual'])
+    print(f"  Velocity jump: {v_jump:.10f}")
+    print(f"  Acceleration jump: {a_jump:.10f}")
+
+    # Evaluate
+    t1 = np.linspace(0, T1, 200)
+    t2 = np.linspace(0, T2, 200)
+
+    pos1, vel1, acc1 = evaluate_motion(plan1, t1)
+    pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
+
+    # Combined
+    t_combined = np.concatenate([t1, T1 + t2[1:]])
+    pos_combined = np.concatenate([pos1, pos2[1:]])
+    vel_combined = np.concatenate([vel1, vel2[1:]])
+    acc_combined = np.concatenate([acc1, acc2[1:]])
+
+    dt = t_combined[1] - t_combined[0]
+    jerk_combined = np.gradient(acc_combined, dt)
+
+    # Plot position
+    axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
+    axs[0].axhline(y=x_target, color='green', linestyle='--', alpha=0.5, label=f'Target x={x_target}')
+    axs[0].axvline(x=T1, color='r', linestyle='--', alpha=0.5, label='Transition')
+    axs[0].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=80, zorder=5)
+    axs[0].set_ylabel('Position')
+    axs[0].set_title('Direction Reversal with Perfect Continuity (using smooth τ(t))')
+    axs[0].legend()
+    axs[0].grid(True, alpha=0.3)
+
+    # Plot velocity
+    axs[1].plot(t_combined, vel_combined, 'g-', linewidth=2)
+    axs[1].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+    axs[1].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+    axs[1].axhline(y=robotVmax, color='orange', linestyle='--', alpha=0.5, label=f'±Vmax')
+    axs[1].axhline(y=-robotVmax, color='orange', linestyle='--', alpha=0.5)
+    axs[1].set_ylabel('Velocity')
+    axs[1].legend()
+    axs[1].grid(True, alpha=0.3)
+    axs[1].annotate('Smooth decel\n& reversal', (T1 + T2/2, min(vel2)),
+                    textcoords="offset points", xytext=(10, -20), fontsize=9)
+
+    # Plot acceleration
+    axs[2].plot(t_combined, acc_combined, 'orange', linewidth=2)
+    axs[2].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+    axs[2].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+    axs[2].axhline(y=robotAmax, color='r', linestyle='--', alpha=0.5, label=f'±Amax')
+    axs[2].axhline(y=-robotAmax, color='r', linestyle='--', alpha=0.5)
+    axs[2].set_ylabel('Acceleration')
+    axs[2].legend()
+    axs[2].grid(True, alpha=0.3)
+
+    # Plot jerk
+    axs[3].plot(t_combined, jerk_combined, 'purple', linewidth=2)
+    axs[3].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+    axs[3].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+    axs[3].set_xlabel('Time (s)')
+    axs[3].set_ylabel('Jerk')
+    axs[3].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/direction_reversal.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/direction_reversal.png")
     plt.close()
 
 
@@ -397,5 +509,6 @@ if __name__ == '__main__':
     plot_custom_boundary_conditions()
     plot_curve_segment_visualization()
     plot_motion_continuation()
+    plot_direction_reversal()
 
     print("\nAll plots generated successfully!")

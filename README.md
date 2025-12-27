@@ -411,32 +411,53 @@ t = np.linspace(0, plan['T'], 100)
 position, velocity, acceleration = evaluate_motion(plan, t)
 ```
 
-## Motion Continuation (Chaining Motions)
+## Motion Continuation (Chaining Motions with Perfect Continuity)
 
-One powerful use case is smoothly chaining multiple motions. The end state of one motion becomes the start state of the next:
+The `continue_motion` function allows seamless chaining of motions with **perfect continuity in all derivatives** (velocity, acceleration, jerk, and beyond) while reaching **any target position**.
+
+### The Key Insight
+
+Instead of using a linear time mapping τ(t), we use a **smooth polynomial τ(t)** that matches all derivatives at the junction. This allows us to:
+1. Match the exact velocity, acceleration, AND jerk at the transition
+2. Reach any desired target position
+3. End at rest with smooth deceleration
 
 ```python
-from scurvebeta.generalized import plan_motion, evaluate_motion
+from scurvebeta.generalized import plan_motion, continue_motion, evaluate_smooth_motion
 
 robotVmax, robotAmax = 6, 3
 
 # First motion: 0 → 10, start at rest, end moving
 plan1 = plan_motion(0, 10, v0=0, v1=2, robotVmax=robotVmax, robotAmax=robotAmax)
 
-# Get the actual end state
-v_end = plan1['v1_actual']
-a_end = plan1['a1_actual']
+# Continue to ANY target with PERFECT continuity in all derivatives!
+plan2 = continue_motion(plan1, x_target=18, robotVmax=robotVmax, robotAmax=robotAmax)
 
-# Second motion: 10 → 15, continue from previous state, end at rest
-plan2 = plan_motion(10, 15, v0=v_end, v1=0, a0=a_end, robotVmax=robotVmax, robotAmax=robotAmax)
+# Check continuity
+print(f"Motion 1 end: v={plan1['v1_actual']:.6f}, a={plan1['a1_actual']:.6f}")
+print(f"Motion 2 start: v={plan2['v0_actual']:.6f}, a={plan2['a0_actual']:.6f}")
+# Output: EXACT match - no jumps in any derivative!
 
-# The velocity is continuous at the transition!
-print(f"Motion 1 end velocity: {plan1['v1_actual']:.4f}")
-print(f"Motion 2 start velocity: {plan2['v0_actual']:.4f}")
-# Output: Both are 2.0000 - perfect continuity!
+# Evaluate the smooth motion
+t = np.linspace(0, plan2['T'], 100)
+pos, vel, acc = evaluate_smooth_motion(plan2, t)
 ```
 
 ![](https://github.com/hidoba/s-curve-beta/raw/main/img/motion_continuation.png)
+
+### Direction Reversal
+
+The smooth continuation even handles direction reversals gracefully:
+
+```python
+# Moving right, but want to go back left
+plan1 = plan_motion(0, 8, v0=0, v1=2, robotVmax=6, robotAmax=3)
+plan2 = continue_motion(plan1, x_target=3)  # Target is BEHIND current direction!
+
+# Still perfect continuity - the motion smoothly decelerates and reverses
+```
+
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/direction_reversal.png)
 
 ## Comparison: Rest-to-Rest vs Custom Boundaries
 
@@ -473,6 +494,26 @@ Evaluate the motion at time(s) t.
 
 **Returns:** `(position, velocity, acceleration)` tuple
 
+### `continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None)`
+
+Continue from a previous motion to reach x_target with **perfect continuity in all derivatives**.
+
+Uses a smooth polynomial time parameterization τ(t) instead of linear mapping.
+
+**Parameters:**
+- `prev_plan`: Previous motion plan
+- `x_target`: Target position to reach
+- `T`: Desired duration (optional, auto-calculated)
+- `robotVmax`, `robotAmax`: Motion constraints
+
+**Returns:** Dictionary with smooth motion plan (use `evaluate_smooth_motion` to evaluate)
+
+### `evaluate_smooth_motion(plan, t)`
+
+Evaluate a smooth motion plan at time(s) t. Works for both regular and smooth motion plans.
+
+**Returns:** `(position, velocity, acceleration)` tuple
+
 ### Lower-level Functions
 
 ```python
@@ -484,6 +525,7 @@ from scurvebeta.generalized import (
     normalized_f,             # Normalized position function f(τ)
     normalized_f_derivative,  # Velocity profile f'(τ)
     normalized_f_second_derivative,  # Acceleration profile f''(τ)
+    SmoothMotion,             # Class for smooth time parameterization
 )
 ```
 
@@ -507,11 +549,11 @@ where Δτ = τ_end - τ_start and Δf = f(τ_end) - f(τ_start).
 
 ## Limitations
 
-1. **Coupled velocity and acceleration**: At any point on the curve, velocity and acceleration are linked. You cannot specify arbitrary (v, a) pairs independently.
+1. **Phase space constraint**: The S-curve traces a loop in velocity-acceleration phase space. At any τ, velocity and acceleration are coupled - you cannot specify arbitrary (v, a) pairs independently. However, using `continue_motion` with smooth τ(t) allows reaching any target while maintaining this physical consistency.
 
-2. **Velocity direction**: The start/end velocity should be in the same direction as the motion (from x0 to x1). Opposite-direction velocities are not fully supported.
+2. **Constraint satisfaction**: For extreme cases (very short distances with high initial velocity), the smooth continuation may produce motions that temporarily exceed velocity or acceleration limits.
 
-3. **Numerical search**: For custom boundary conditions, the algorithm uses numerical search to find the optimal curve segment, which may be slower than the closed-form rest-to-rest solution.
+3. **Numerical computation**: The smooth motion uses polynomial τ(t) which may be slower than the closed-form rest-to-rest solution. For performance-critical applications, consider pre-computing motion profiles.
 
 ## License
 

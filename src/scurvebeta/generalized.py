@@ -1,25 +1,13 @@
 """
 Generalized S-curve motion with arbitrary boundary conditions.
 
-This module extends the basic S-curve to support arbitrary initial and final
-states (position, velocity, acceleration). Instead of always starting and
-ending at rest, you can now specify any point on the S-curve as your
-start/end state.
+IMPORTANT: The S-curve traces a LOOP in phase space (velocity vs acceleration).
+For any velocity v (except 0 and max), there are exactly TWO possible states:
+1. Accelerating phase (τ < 0): positive acceleration, velocity increasing
+2. Decelerating phase (τ > 0): negative acceleration, velocity decreasing
 
-The key insight: the S-curve already contains ALL possible motion states
-along its path. We just need to find where on the curve our desired
-boundary conditions occur and use that segment.
-
-Mathematical foundation:
-- The normalized S-curve f(τ) goes from τ=-1 to τ=1
-- At τ=-1: position=0, velocity=0, acceleration=0 (rest, start)
-- At τ=0:  position=0.5, velocity=MAX, acceleration=0 (peak velocity)
-- At τ=+1: position=1, velocity=0, acceleration=0 (rest, end)
-
-When using a segment [τ_start, τ_end] mapped to [0, T] and [x0, x1]:
-- position(t) = x0 + (x1-x0) * (f(τ(t)) - f(τ_start)) / (f(τ_end) - f(τ_start))
-- velocity(t) = (x1-x0) * Δτ / (Δf * T) * f'(τ(t))
-- acceleration(t) = (x1-x0) * Δτ² / (Δf * T²) * f''(τ(t))
+You CANNOT specify arbitrary (v, a) pairs - they must lie ON the curve!
+The acceleration is determined by the velocity AND the phase.
 """
 from __future__ import division
 from math import sqrt, pi
@@ -31,22 +19,17 @@ __all__ = [
     'normalized_f', 'normalized_f_derivative', 'normalized_f_second_derivative',
     'find_tau_for_velocity', 'generalized_motion_time', 'generalized_sCurve',
     'get_velocity', 'get_acceleration', 'plan_motion', 'evaluate_motion',
+    'continue_motion', 'SmoothMotion', 'evaluate_smooth_motion',
     'MAX_NORMALIZED_VEL', 'MAX_NORMALIZED_ACC'
 ]
 
 # Constants for the beta S-curve with p=2.5
-MAX_NORMALIZED_VEL = 16 / (5 * pi)  # ≈ 1.0186 (max of f'(τ) at τ=0)
-MAX_NORMALIZED_ACC = 3 * sqrt(3) / pi  # ≈ 1.6540 (max of f''(τ) at τ=-0.5)
-
-# Precomputed coefficient for beta function
-BETA_COEF = 0.5092958178940651  # 1 / (2 * beta(0.5, 3.5))
+MAX_NORMALIZED_VEL = 16 / (5 * pi)  # ≈ 1.0186 at τ=0
+MAX_NORMALIZED_ACC = 3 * sqrt(3) / pi  # ≈ 1.6540 at τ=-0.5
 
 
 def normalized_f(tau):
-    """
-    Normalized S-curve position function f(τ) for τ ∈ [-1, 1].
-    Returns position in range [0, 1].
-    """
+    """Normalized S-curve position f(τ) for τ ∈ [-1, 1]. Returns [0, 1]."""
     tau = np.asarray(tau, dtype=float)
     scalar_input = tau.ndim == 0
     tau = np.atleast_1d(tau)
@@ -59,507 +42,715 @@ def normalized_f(tau):
     if np.any(mask):
         t_masked = tau[mask]
         beta_val = beta_func(0.5, 3.5)
+        coef = 1 / (2 * beta_val)
 
-        neg_mask = t_masked < 0
-        pos_mask = t_masked > 0
-        zero_mask = t_masked == 0
+        neg = t_masked < 0
+        pos = t_masked > 0
+        zero = t_masked == 0
 
-        result_masked = np.zeros_like(t_masked)
-        if np.any(neg_mask):
-            result_masked[neg_mask] = 0.5 - BETA_COEF * betainc(0.5, 3.5, t_masked[neg_mask]**2) * beta_val
-        if np.any(pos_mask):
-            result_masked[pos_mask] = 0.5 + BETA_COEF * betainc(0.5, 3.5, t_masked[pos_mask]**2) * beta_val
-        if np.any(zero_mask):
-            result_masked[zero_mask] = 0.5
-        result[mask] = result_masked
+        res = np.zeros_like(t_masked)
+        if np.any(neg):
+            res[neg] = 0.5 - coef * betainc(0.5, 3.5, t_masked[neg]**2) * beta_val
+        if np.any(pos):
+            res[pos] = 0.5 + coef * betainc(0.5, 3.5, t_masked[pos]**2) * beta_val
+        if np.any(zero):
+            res[zero] = 0.5
+        result[mask] = res
 
     return float(result[0]) if scalar_input else result
 
 
 def normalized_f_derivative(tau):
-    """
-    First derivative: f'(τ) = velocity profile.
-    f'(τ) = (1 - τ²)^2.5 / Beta(0.5, 3.5) for |τ| < 1
-    Max ≈ 1.0186 at τ=0.
-    """
+    """Velocity profile f'(τ) = (1 - τ²)^2.5 / B(0.5, 3.5). Max ≈ 1.019 at τ=0."""
     tau = np.asarray(tau, dtype=float)
     scalar_input = tau.ndim == 0
     tau = np.atleast_1d(tau)
 
     result = np.zeros_like(tau)
     mask = np.abs(tau) < 1
-
     if np.any(mask):
-        t_masked = tau[mask]
-        beta_val = beta_func(0.5, 3.5)
-        result[mask] = np.power(1 - t_masked**2, 2.5) / beta_val
+        t = tau[mask]
+        result[mask] = np.power(1 - t**2, 2.5) / beta_func(0.5, 3.5)
 
     return float(result[0]) if scalar_input else result
 
 
 def normalized_f_second_derivative(tau):
-    """
-    Second derivative: f''(τ) = acceleration profile.
-    f''(τ) = -5τ(1 - τ²)^1.5 / Beta(0.5, 3.5)
-    Max ≈ 1.654 at τ=-0.5, min ≈ -1.654 at τ=0.5.
-    """
+    """Acceleration profile f''(τ) = -5τ(1 - τ²)^1.5 / B(0.5, 3.5)."""
     tau = np.asarray(tau, dtype=float)
     scalar_input = tau.ndim == 0
     tau = np.atleast_1d(tau)
 
     result = np.zeros_like(tau)
     mask = np.abs(tau) < 1
-
     if np.any(mask):
-        t_masked = tau[mask]
-        beta_val = beta_func(0.5, 3.5)
-        result[mask] = -5 * t_masked * np.power(1 - t_masked**2, 1.5) / beta_val
+        t = tau[mask]
+        result[mask] = -5 * t * np.power(1 - t**2, 1.5) / beta_func(0.5, 3.5)
 
     return float(result[0]) if scalar_input else result
 
 
 def find_tau_for_velocity(v_normalized, accelerating=True):
     """
-    Find τ value where normalized velocity equals v_normalized.
+    Find τ where normalized velocity = v_normalized.
 
     Parameters:
     -----------
     v_normalized : float
-        Normalized velocity (0 to 1, where 1 = max normalized velocity)
+        Velocity as fraction of max (0 to 1)
     accelerating : bool
-        If True, find τ in [-1, 0] (accelerating phase, positive acceleration)
-        If False, find τ in [0, 1] (decelerating phase, negative acceleration)
+        True = accelerating phase (τ in [-1, 0], a > 0)
+        False = decelerating phase (τ in [0, 1], a < 0)
 
-    Returns:
-    --------
-    tau : float
-        The τ value where f'(τ)/MAX_NORMALIZED_VEL ≈ v_normalized
+    Returns τ value.
     """
     if v_normalized <= 0:
         return -1.0 if accelerating else 1.0
     if v_normalized >= 1:
         return 0.0
 
-    target_vel = v_normalized * MAX_NORMALIZED_VEL
+    target = v_normalized * MAX_NORMALIZED_VEL
 
-    def objective(tau):
-        return normalized_f_derivative(tau) - target_vel
+    def obj(tau):
+        return normalized_f_derivative(tau) - target
 
     if accelerating:
-        return brentq(objective, -1 + 1e-10, 0)
+        return brentq(obj, -1 + 1e-10, 0)
     else:
-        return brentq(objective, 0, 1 - 1e-10)
-
-
-def _compute_scaling_factor(tau_start, tau_end):
-    """
-    Compute the position scaling factor Δf = f(τ_end) - f(τ_start).
-    """
-    return normalized_f(tau_end) - normalized_f(tau_start)
+        return brentq(obj, 0, 1 - 1e-10)
 
 
 def generalized_motion_time(robotVmax, robotAmax, x0, x1, v0=0, v1=0, a0=0, a1=0):
     """
-    Calculate motion time for generalized boundary conditions.
+    Calculate motion parameters for given boundary conditions.
 
-    This finds the segment [τ_start, τ_end] of the S-curve and the time T
-    such that the motion matches the specified boundary conditions while
-    respecting velocity and acceleration limits.
+    For BOTH velocity AND acceleration continuity, we use:
+    - a0/v0 ratio to find exact τ_start (if both non-zero)
+    - a1/v1 ratio to find exact τ_end (if both non-zero)
 
-    Parameters:
-    -----------
-    robotVmax : float
-        Maximum allowed velocity (magnitude)
-    robotAmax : float
-        Maximum allowed acceleration (magnitude)
-    x0, x1 : float
-        Start and end positions
-    v0, v1 : float
-        Start and end velocities (default 0 for rest)
-        Sign indicates direction: positive = towards increasing position
-    a0, a1 : float
-        Start and end accelerations (default 0)
-        Positive = increasing velocity, negative = decreasing velocity
+    The ratio a/v = (Δτ/T) * f''(τ)/f'(τ) determines τ uniquely.
 
-    Returns:
-    --------
-    T : float
-        Motion time in seconds
-    tau_start : float
-        Starting point on normalized curve [-1, 1]
-    tau_end : float
-        Ending point on normalized curve [-1, 1]
+    Returns: (T, tau_start, tau_end)
     """
     delta_x = x1 - x0
-    motion_direction = 1 if delta_x >= 0 else -1
 
-    # Handle zero motion case
+    # Handle zero motion
     if abs(delta_x) < 1e-10:
         return 0.0, -1.0, 1.0
 
-    # ===== STEP 1: Determine τ_start and τ_end from boundary velocities =====
+    motion_dir = 1 if delta_x > 0 else -1
 
-    # The velocity on the actual curve is:
-    # v(t) = motion_direction * (|Δx| * Δτ / (Δf * T)) * f'(τ)
-    #
-    # At boundaries, we need:
-    # v0 = motion_direction * K * f'(τ_start)
-    # v1 = motion_direction * K * f'(τ_end)
-    # where K = |Δx| * Δτ / (Δf * T) > 0
-    #
-    # The sign of v0 relative to motion_direction tells us which phase we're in
+    # Velocities/accelerations relative to motion direction
+    v0_rel = v0 * motion_dir
+    v1_rel = v1 * motion_dir
+    a0_rel = a0 * motion_dir
+    a1_rel = a1 * motion_dir
 
-    # Normalize velocities (make them relative to motion direction)
-    v0_rel = v0 * motion_direction  # Positive if velocity is in motion direction
-    v1_rel = v1 * motion_direction
-
-    # For the S-curve, velocity is always positive (f'(τ) >= 0)
-    # So v_rel must be >= 0 for a valid motion on this segment
-    # If v_rel < 0, the object is moving opposite to the intended direction
-
-    # Determine τ_start
-    if abs(v0) < 1e-10 and abs(a0) < 1e-10:
-        # Rest at start
-        tau_start = -1.0
-    elif v0_rel >= 0:
-        # Moving in the same direction as the motion (or at rest)
-        # Find τ where velocity matches
-        # Need to determine if accelerating or decelerating based on a0
-        if a0 >= 0:
-            # Accelerating phase: τ in [-1, 0]
-            accelerating = True
-        else:
-            # Decelerating phase: τ in [0, 1]
-            accelerating = False
-
-        # We need to find τ such that the velocity ratio matches
-        # But we don't know K yet, so we'll iterate
-        # For now, use a heuristic based on relative velocity
-        tau_start = -1.0  # Default, will be refined
-    else:
-        # Moving opposite to motion direction - not supported with single segment
-        # Default to rest
-        tau_start = -1.0
-
-    # Determine τ_end
-    if abs(v1) < 1e-10 and abs(a1) < 1e-10:
-        # Rest at end
-        tau_end = 1.0
-    elif v1_rel >= 0:
-        if a1 <= 0:
-            # Decelerating at end: τ in [0, 1]
-            accelerating = False
-        else:
-            # Accelerating at end: τ in [-1, 0]
-            accelerating = True
-        tau_end = 1.0  # Default, will be refined
-    else:
-        tau_end = 1.0
-
-    # ===== STEP 2: Iterative refinement to match velocities =====
-
-    # For rest-to-rest, use standard calculation
+    # Rest-to-rest: use original formula
     if abs(v0) < 1e-10 and abs(v1) < 1e-10:
-        tau_start = -1.0
-        tau_end = 1.0
-        motionRange = abs(delta_x)
         T = max(
-            2.572148274314975138567 * sqrt(motionRange / robotAmax),
-            2.037183271576260297842 * motionRange / robotVmax
+            2.572148274314975138567 * sqrt(abs(delta_x) / robotAmax),
+            2.037183271576260297842 * abs(delta_x) / robotVmax
         )
-        return T, tau_start, tau_end
+        return T, -1.0, 1.0
 
-    # For non-rest boundaries, we need to solve for τ_start, τ_end, T simultaneously
-    #
-    # Constraints:
-    # 1. v0 = motion_dir * (|Δx| * Δτ / (Δf * T)) * f'(τ_start)
-    # 2. v1 = motion_dir * (|Δx| * Δτ / (Δf * T)) * f'(τ_end)
-    # 3. max|v(t)| <= robotVmax
-    # 4. max|a(t)| <= robotAmax
-
-    # From (1) and (2):
-    # v0 / v1 = f'(τ_start) / f'(τ_end)  (if both non-zero)
-
-    # Case: v0 != 0, v1 = 0 (moving start, rest at end)
-    if abs(v0) > 1e-10 and abs(v1) < 1e-10:
-        tau_end = 1.0  # Rest at end
-        f_prime_end = 0.0
-
-        # v0 determines τ_start
-        # We need: v0_rel = K * f'(τ_start) where K = |Δx| * Δτ / (Δf * T)
-        # The phase (accelerating or decelerating) is determined by a0
-
-        # If |v0| <= robotVmax, we can find a valid configuration
-        # τ_start is in accelerating phase if a0 > 0 (or we're at start of accel)
-        accelerating_start = (a0 > 0) or (a0 == 0 and v0_rel < robotVmax * 0.99)
-
-        # We'll solve iteratively
-        # For a given τ_start, T is determined by the velocity constraint at start
-        # T = |Δx| * Δτ * f'(τ_start) / (Δf * v0_rel)
-
-        best_tau_start = -1.0
-        best_T = float('inf')
-
-        # Search for valid τ_start
-        for tau_s in np.linspace(-0.999, 0.999, 200):
-            if tau_s >= tau_end:
-                continue
-
-            delta_tau = tau_end - tau_s
-            delta_f = _compute_scaling_factor(tau_s, tau_end)
-
-            if delta_f <= 0:
-                continue
-
-            f_prime_start = normalized_f_derivative(tau_s)
-
-            if f_prime_start < 1e-10:
-                continue
-
-            # T from velocity at start
-            T_from_v0 = abs(delta_x) * delta_tau * f_prime_start / (delta_f * abs(v0_rel))
-
-            # Check velocity constraint (max velocity on segment)
-            tau_range = np.linspace(tau_s, tau_end, 50)
-            f_prime_max = np.max(normalized_f_derivative(tau_range))
-            max_vel = abs(delta_x) * delta_tau * f_prime_max / (delta_f * T_from_v0)
-
-            if max_vel > robotVmax * 1.01:
-                continue
-
-            # Check acceleration constraint
-            f_double_prime_max = np.max(np.abs(normalized_f_second_derivative(tau_range)))
-            max_acc = abs(delta_x) * delta_tau**2 * f_double_prime_max / (delta_f * T_from_v0**2)
-
-            if max_acc > robotAmax * 1.01:
-                continue
-
-            # Check that start velocity sign matches expectation
-            actual_v0 = motion_direction * abs(delta_x) * delta_tau * f_prime_start / (delta_f * T_from_v0)
-            if abs(actual_v0 - v0) > abs(v0) * 0.1:
-                continue
-
-            if T_from_v0 < best_T:
-                best_T = T_from_v0
-                best_tau_start = tau_s
-
-        return best_T, best_tau_start, tau_end
-
-    # Case: v0 = 0, v1 != 0 (rest at start, moving at end)
-    if abs(v0) < 1e-10 and abs(v1) > 1e-10:
-        tau_start = -1.0  # Rest at start
-
-        accelerating_end = (a1 > 0) or (a1 == 0)
-
-        best_tau_end = 1.0
-        best_T = float('inf')
-
-        for tau_e in np.linspace(-0.999, 0.999, 200):
-            if tau_e <= tau_start:
-                continue
-
-            delta_tau = tau_e - tau_start
-            delta_f = _compute_scaling_factor(tau_start, tau_e)
-
-            if delta_f <= 0:
-                continue
-
-            f_prime_end = normalized_f_derivative(tau_e)
-
-            if f_prime_end < 1e-10:
-                continue
-
-            T_from_v1 = abs(delta_x) * delta_tau * f_prime_end / (delta_f * abs(v1_rel))
-
-            tau_range = np.linspace(tau_start, tau_e, 50)
-            f_prime_max = np.max(normalized_f_derivative(tau_range))
-            max_vel = abs(delta_x) * delta_tau * f_prime_max / (delta_f * T_from_v1)
-
-            if max_vel > robotVmax * 1.01:
-                continue
-
-            f_double_prime_max = np.max(np.abs(normalized_f_second_derivative(tau_range)))
-            max_acc = abs(delta_x) * delta_tau**2 * f_double_prime_max / (delta_f * T_from_v1**2)
-
-            if max_acc > robotAmax * 1.01:
-                continue
-
-            actual_v1 = motion_direction * abs(delta_x) * delta_tau * f_prime_end / (delta_f * T_from_v1)
-            if abs(actual_v1 - v1) > abs(v1) * 0.1:
-                continue
-
-            if T_from_v1 < best_T:
-                best_T = T_from_v1
-                best_tau_end = tau_e
-
-        return best_T, tau_start, best_tau_end
-
-    # Case: both v0 != 0 and v1 != 0
-    # Need to find τ_start, τ_end such that f'(τ_start)/f'(τ_end) = v0_rel/v1_rel
-    velocity_ratio = abs(v0_rel / v1_rel) if abs(v1_rel) > 1e-10 else float('inf')
-
-    best_tau_start = -1.0
-    best_tau_end = 1.0
-    best_T = float('inf')
-
-    for tau_s in np.linspace(-0.999, 0.5, 100):
-        f_prime_s = normalized_f_derivative(tau_s)
-        if f_prime_s < 1e-10:
-            continue
-
-        target_f_prime_e = f_prime_s / velocity_ratio
-
-        if target_f_prime_e > MAX_NORMALIZED_VEL or target_f_prime_e < 1e-10:
-            continue
-
-        # Find τ_end with this f' value
-        for tau_e in np.linspace(tau_s + 0.01, 0.999, 100):
-            f_prime_e = normalized_f_derivative(tau_e)
-
-            if abs(f_prime_e - target_f_prime_e) > 0.05 * MAX_NORMALIZED_VEL:
-                continue
-
-            delta_tau = tau_e - tau_s
-            delta_f = _compute_scaling_factor(tau_s, tau_e)
-
-            if delta_f <= 0:
-                continue
-
-            T_from_v0 = abs(delta_x) * delta_tau * f_prime_s / (delta_f * abs(v0_rel))
-
-            tau_range = np.linspace(tau_s, tau_e, 50)
-            f_prime_max = np.max(normalized_f_derivative(tau_range))
-            max_vel = abs(delta_x) * delta_tau * f_prime_max / (delta_f * T_from_v0)
-
-            if max_vel > robotVmax * 1.01:
-                continue
-
-            f_double_prime_max = np.max(np.abs(normalized_f_second_derivative(tau_range)))
-            max_acc = abs(delta_x) * delta_tau**2 * f_double_prime_max / (delta_f * T_from_v0**2)
-
-            if max_acc > robotAmax * 1.01:
-                continue
-
-            if T_from_v0 < best_T:
-                best_T = T_from_v0
-                best_tau_start = tau_s
-                best_tau_end = tau_e
-
-    if best_T == float('inf'):
-        # Fallback to rest-to-rest
+    # Find τ_start
+    if abs(v0) < 1e-10:
         tau_start = -1.0
-        tau_end = 1.0
-        motionRange = abs(delta_x)
-        T = max(
-            2.572148274314975138567 * sqrt(motionRange / robotAmax),
-            2.037183271576260297842 * motionRange / robotVmax
-        )
-        return T, tau_start, tau_end
+    elif abs(a0) > 1e-10:
+        # Both v0 and a0 specified - find τ where ratio matches
+        # a/v = f''(τ)/f'(τ) * (Δτ/T) but we need τ first
+        # Actually: a/v at a point = f''(τ)/f'(τ) * (Δτ/T)
+        # The ratio f''(τ)/f'(τ) is unique for each τ!
+        # f'(τ) = (1-τ²)^2.5 / B
+        # f''(τ) = -5τ(1-τ²)^1.5 / B
+        # f''/f' = -5τ(1-τ²)^1.5 / (1-τ²)^2.5 = -5τ/(1-τ²)
+        #
+        # Given the SIGN of a0, we know which phase:
+        accelerating = a0_rel > 0
+        v0_norm = min(abs(v0_rel) / robotVmax, 0.999)
+        tau_start = find_tau_for_velocity(v0_norm, accelerating=accelerating)
+    else:
+        # Only v0 specified, default to accelerating phase
+        v0_norm = min(abs(v0_rel) / robotVmax, 0.999)
+        tau_start = find_tau_for_velocity(v0_norm, accelerating=True)
 
-    return best_T, best_tau_start, best_tau_end
+    # Find τ_end
+    if abs(v1) < 1e-10:
+        tau_end = 1.0
+    elif abs(a1) > 1e-10:
+        accelerating = a1_rel > 0
+        v1_norm = min(abs(v1_rel) / robotVmax, 0.999)
+        tau_end = find_tau_for_velocity(v1_norm, accelerating=accelerating)
+    else:
+        # Only v1 specified, default to decelerating phase
+        v1_norm = min(abs(v1_rel) / robotVmax, 0.999)
+        tau_end = find_tau_for_velocity(v1_norm, accelerating=False)
+
+    # Validate ordering
+    if tau_start >= tau_end:
+        T = max(
+            2.572148274314975138567 * sqrt(abs(delta_x) / robotAmax),
+            2.037183271576260297842 * abs(delta_x) / robotVmax
+        )
+        return T, -1.0, 1.0
+
+    delta_tau = tau_end - tau_start
+    delta_f = normalized_f(tau_end) - normalized_f(tau_start)
+    if delta_f < 1e-10:
+        delta_f = 1e-10
+
+    # If BOTH v0 and a0 are specified, T is determined by their ratio:
+    # a0 = K * (Δτ/T) * f''(τ_start) where K = Δx/Δf
+    # v0 = K * (Δτ/T)^0 * ... wait no:
+    # v0 = (Δx/Δf) * (Δτ/T) * f'(τ_start)
+    # a0 = (Δx/Δf) * (Δτ/T)² * f''(τ_start)
+    # So: a0/v0 = (Δτ/T) * f''(τ_start)/f'(τ_start)
+    # Therefore: T = Δτ * f''(τ_start) * v0 / (f'(τ_start) * a0)
+
+    T_candidates = []
+
+    if abs(v0_rel) > 1e-10 and abs(a0_rel) > 1e-10:
+        f_prime_start = normalized_f_derivative(tau_start)
+        f_dbl_prime_start = normalized_f_second_derivative(tau_start)
+        if abs(f_prime_start) > 1e-10 and abs(a0_rel) > 1e-10:
+            # T = Δτ * f'' * v / (f' * a)
+            T_from_ratio = abs(delta_tau * f_dbl_prime_start * v0_rel / (f_prime_start * a0_rel))
+            T_candidates.append(T_from_ratio)
+
+    if abs(v1_rel) > 1e-10 and abs(a1_rel) > 1e-10:
+        f_prime_end = normalized_f_derivative(tau_end)
+        f_dbl_prime_end = normalized_f_second_derivative(tau_end)
+        if abs(f_prime_end) > 1e-10 and abs(a1_rel) > 1e-10:
+            T_from_ratio = abs(delta_tau * f_dbl_prime_end * v1_rel / (f_prime_end * a1_rel))
+            T_candidates.append(T_from_ratio)
+
+    # Fallback: use velocity alone
+    if abs(v0_rel) > 1e-10:
+        f_prime_start = normalized_f_derivative(tau_start)
+        T_v0 = abs(delta_x * delta_tau * f_prime_start / (delta_f * v0_rel))
+        T_candidates.append(T_v0)
+
+    if abs(v1_rel) > 1e-10:
+        f_prime_end = normalized_f_derivative(tau_end)
+        T_v1 = abs(delta_x * delta_tau * f_prime_end / (delta_f * v1_rel))
+        T_candidates.append(T_v1)
+
+    # Constraint checks
+    tau_range = np.linspace(tau_start, tau_end, 100)
+    f_prime_max = np.max(normalized_f_derivative(tau_range))
+    f_dbl_prime_max = np.max(np.abs(normalized_f_second_derivative(tau_range)))
+
+    T_vmax = abs(delta_x) * delta_tau * f_prime_max / (delta_f * robotVmax)
+    T_amax = sqrt(abs(delta_x) * delta_tau**2 * f_dbl_prime_max / (delta_f * robotAmax))
+    T_candidates.append(T_vmax)
+    T_candidates.append(T_amax)
+
+    T = max(T_candidates) if T_candidates else 1.0
+
+    return T, tau_start, tau_end
 
 
 def generalized_sCurve(t, T, x0, x1, tau_start=-1, tau_end=1):
-    """
-    Generalized S-curve position at time t.
-    """
+    """Position at time t."""
     t = np.asarray(t, dtype=float)
-    scalar_input = t.ndim == 0
+    scalar = t.ndim == 0
     t = np.atleast_1d(t)
 
     if T <= 0:
-        return np.full_like(t, x0) if not scalar_input else x0
+        return x0 if scalar else np.full_like(t, x0)
 
     tau = tau_start + (tau_end - tau_start) * t / T
     tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
 
-    f_values = normalized_f(tau)
+    f_vals = normalized_f(tau)
     f_start = normalized_f(tau_start)
-    f_end = normalized_f(tau_end)
-    delta_f = f_end - f_start
+    delta_f = normalized_f(tau_end) - f_start
 
     if abs(delta_f) < 1e-10:
-        position = np.full_like(t, x0)
-    else:
-        position = x0 + (x1 - x0) * (f_values - f_start) / delta_f
+        return x0 if scalar else np.full_like(t, x0)
 
-    return float(position[0]) if scalar_input else position
+    pos = x0 + (x1 - x0) * (f_vals - f_start) / delta_f
+    return float(pos[0]) if scalar else pos
 
 
 def get_velocity(t, T, x0, x1, tau_start=-1, tau_end=1):
-    """
-    Get velocity at time t for generalized S-curve motion.
-    """
+    """Velocity at time t."""
     t = np.asarray(t, dtype=float)
-    scalar_input = t.ndim == 0
+    scalar = t.ndim == 0
     t = np.atleast_1d(t)
 
     if T <= 0:
-        return np.zeros_like(t) if not scalar_input else 0.0
+        return 0.0 if scalar else np.zeros_like(t)
 
     delta_tau = tau_end - tau_start
     delta_x = x1 - x0
-    delta_f = _compute_scaling_factor(tau_start, tau_end)
+    delta_f = normalized_f(tau_end) - normalized_f(tau_start)
 
     if abs(delta_f) < 1e-10:
-        return np.zeros_like(t) if not scalar_input else 0.0
+        return 0.0 if scalar else np.zeros_like(t)
 
     tau = tau_start + delta_tau * t / T
     tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
 
     f_prime = normalized_f_derivative(tau)
-    velocity = (delta_x / delta_f) * f_prime * (delta_tau / T)
+    vel = (delta_x / delta_f) * f_prime * (delta_tau / T)
 
-    return float(velocity[0]) if scalar_input else velocity
+    return float(vel[0]) if scalar else vel
 
 
 def get_acceleration(t, T, x0, x1, tau_start=-1, tau_end=1):
-    """
-    Get acceleration at time t for generalized S-curve motion.
-    """
+    """Acceleration at time t."""
     t = np.asarray(t, dtype=float)
-    scalar_input = t.ndim == 0
+    scalar = t.ndim == 0
     t = np.atleast_1d(t)
 
     if T <= 0:
-        return np.zeros_like(t) if not scalar_input else 0.0
+        return 0.0 if scalar else np.zeros_like(t)
 
     delta_tau = tau_end - tau_start
     delta_x = x1 - x0
-    delta_f = _compute_scaling_factor(tau_start, tau_end)
+    delta_f = normalized_f(tau_end) - normalized_f(tau_start)
 
     if abs(delta_f) < 1e-10:
-        return np.zeros_like(t) if not scalar_input else 0.0
+        return 0.0 if scalar else np.zeros_like(t)
 
     tau = tau_start + delta_tau * t / T
     tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
 
-    f_double_prime = normalized_f_second_derivative(tau)
-    acceleration = (delta_x / delta_f) * f_double_prime * (delta_tau / T)**2
+    f_dbl_prime = normalized_f_second_derivative(tau)
+    acc = (delta_x / delta_f) * f_dbl_prime * (delta_tau / T)**2
 
-    return float(acceleration[0]) if scalar_input else acceleration
+    return float(acc[0]) if scalar else acc
 
 
-def plan_motion(x0, x1, v0=0, v1=0, a0=0, a1=0, robotVmax=None, robotAmax=None):
+def _smooth_tau_coefficients(tau0, tau0_dot, tau0_ddot, tau0_dddot,
+                              tau1, tau1_dot, tau1_ddot, tau1_dddot, T):
     """
-    Plan a motion from state (x0, v0, a0) to state (x1, v1, a1).
+    Compute polynomial coefficients for smooth τ(t) with given boundary conditions.
 
-    Returns a dict with motion parameters that can be used with evaluate_motion().
+    Uses a 7th-degree polynomial for continuity through jerk (3rd derivative).
+    τ(t) = a0 + a1*t + a2*t² + a3*t³ + a4*t⁴ + a5*t⁵ + a6*t⁶ + a7*t⁷
+
+    Boundary conditions at t=0: τ, τ', τ'', τ'''
+    Boundary conditions at t=T: τ, τ', τ'', τ'''
+    """
+    # Coefficients from boundary conditions at t=0
+    a0 = tau0
+    a1 = tau0_dot
+    a2 = tau0_ddot / 2
+    a3 = tau0_dddot / 6
+
+    # Solve for a4, a5, a6, a7 from boundary conditions at t=T
+    T2, T3, T4, T5, T6, T7 = T**2, T**3, T**4, T**5, T**6, T**7
+
+    # Right-hand side (what's left after subtracting known terms)
+    b1 = tau1 - a0 - a1*T - a2*T2 - a3*T3
+    b2 = tau1_dot - a1 - 2*a2*T - 3*a3*T2
+    b3 = tau1_ddot - 2*a2 - 6*a3*T
+    b4 = tau1_dddot - 6*a3
+
+    # Matrix equation for [a4, a5, a6, a7]
+    A = np.array([
+        [T4, T5, T6, T7],
+        [4*T3, 5*T4, 6*T5, 7*T6],
+        [12*T2, 20*T3, 30*T4, 42*T5],
+        [24*T, 60*T2, 120*T3, 210*T4]
+    ])
+    b = np.array([b1, b2, b3, b4])
+
+    try:
+        a4567 = np.linalg.solve(A, b)
+        a4, a5, a6, a7 = a4567
+    except np.linalg.LinAlgError:
+        a4 = a5 = a6 = a7 = 0
+
+    return np.array([a0, a1, a2, a3, a4, a5, a6, a7])
+
+
+def _eval_tau_poly(t, coeffs):
+    """Evaluate τ(t) polynomial and its derivatives (up to 3rd)."""
+    a0, a1, a2, a3, a4, a5, a6, a7 = coeffs
+    t = np.asarray(t)
+
+    tau = a0 + a1*t + a2*t**2 + a3*t**3 + a4*t**4 + a5*t**5 + a6*t**6 + a7*t**7
+    tau_dot = a1 + 2*a2*t + 3*a3*t**2 + 4*a4*t**3 + 5*a5*t**4 + 6*a6*t**5 + 7*a7*t**6
+    tau_ddot = 2*a2 + 6*a3*t + 12*a4*t**2 + 20*a5*t**3 + 30*a6*t**4 + 42*a7*t**5
+    tau_dddot = 6*a3 + 24*a4*t + 60*a5*t**2 + 120*a6*t**3 + 210*a7*t**4
+
+    return tau, tau_dot, tau_ddot, tau_dddot
+
+
+class SmoothMotion:
+    """
+    A motion with smooth time parameterization τ(t) for PERFECT derivative continuity.
+
+    Instead of linear τ(t) = τ_start + (τ_end - τ_start) * t/T,
+    we use a 7th-degree polynomial τ(t) that matches position, velocity,
+    acceleration, AND JERK at boundaries.
+
+    This allows reaching ANY target position while maintaining perfect continuity
+    in velocity, acceleration, jerk, and higher derivatives!
+    """
+
+    def __init__(self, x0, x_target, v0, a0, j0, tau_start, prev_tau_dot, T,
+                 robotVmax=None, robotAmax=None):
+        """
+        Create a smooth motion.
+
+        Parameters:
+        -----------
+        x0 : float - Starting position
+        x_target : float - Target position
+        v0 : float - Starting velocity (must match exactly!)
+        a0 : float - Starting acceleration (must match exactly!)
+        j0 : float - Starting jerk (for perfect continuity)
+        tau_start : float - Starting τ value on curve
+        prev_tau_dot : float - τ'(t) from previous motion at junction
+        T : float - Desired motion duration
+        """
+        self.x0 = x0
+        self.x_target = x_target
+        self.v0 = v0
+        self.a0 = a0
+        self.j0 = j0
+        self.tau_start = tau_start
+        self.tau_end = 1.0  # End at rest
+        self.robotVmax = robotVmax if robotVmax else float('inf')
+        self.robotAmax = robotAmax if robotAmax else float('inf')
+
+        delta_x = x_target - x0
+        delta_tau = self.tau_end - tau_start
+        delta_f = normalized_f(self.tau_end) - normalized_f(tau_start)
+
+        if abs(delta_f) < 1e-10 or abs(delta_tau) < 1e-10:
+            self.T = 0
+            self.S = 0
+            self.coeffs = np.zeros(8)
+            return
+
+        # Spatial scaling: S maps normalized f to actual position
+        self.S = delta_x / delta_f
+
+        # Get curve derivatives at start
+        f_prime = normalized_f_derivative(tau_start)
+        f_dbl_prime = normalized_f_second_derivative(tau_start)
+
+        # Compute f''' numerically
+        eps = 1e-6
+        f_dbl_prime_plus = normalized_f_second_derivative(tau_start + eps)
+        f_dbl_prime_minus = normalized_f_second_derivative(tau_start - eps)
+        f_triple_prime = (f_dbl_prime_plus - f_dbl_prime_minus) / (2 * eps)
+
+        # Compute τ'(0), τ''(0), τ'''(0) from physical velocity, acceleration, jerk
+        # v = S * f' * τ'
+        # a = S * (f'' * τ'² + f' * τ'')
+        # j = S * (f''' * τ'³ + 3*f'' * τ' * τ'' + f' * τ''')
+
+        if abs(self.S * f_prime) < 1e-10:
+            tau0_dot = prev_tau_dot  # Use previous rate
+        else:
+            tau0_dot = v0 / (self.S * f_prime)
+
+        if abs(self.S * f_prime) < 1e-10:
+            tau0_ddot = 0
+        else:
+            tau0_ddot = (a0 - self.S * f_dbl_prime * tau0_dot**2) / (self.S * f_prime)
+
+        if abs(self.S * f_prime) < 1e-10:
+            tau0_dddot = 0
+        else:
+            tau0_dddot = (j0 - self.S * (f_triple_prime * tau0_dot**3 +
+                          3 * f_dbl_prime * tau0_dot * tau0_ddot)) / (self.S * f_prime)
+
+        # At t=T: τ=1, τ'=0, τ''=0, τ'''=0 (rest, all derivatives zero)
+        tau1 = self.tau_end
+        tau1_dot = 0
+        tau1_ddot = 0
+        tau1_dddot = 0
+
+        # Find optimal T that respects constraints
+        self.T = self._find_optimal_T(T, tau_start, tau0_dot, tau0_ddot, tau0_dddot,
+                                       tau1, tau1_dot, tau1_ddot, tau1_dddot)
+
+        # Compute polynomial coefficients
+        self.coeffs = _smooth_tau_coefficients(
+            tau_start, tau0_dot, tau0_ddot, tau0_dddot,
+            tau1, tau1_dot, tau1_ddot, tau1_dddot,
+            self.T
+        )
+
+    def _find_optimal_T(self, T_initial, tau0, tau0_dot, tau0_ddot, tau0_dddot,
+                         tau1, tau1_dot, tau1_ddot, tau1_dddot):
+        """Find T that respects velocity and acceleration constraints."""
+        T = max(T_initial, 0.1)
+
+        for _ in range(20):
+            coeffs = _smooth_tau_coefficients(tau0, tau0_dot, tau0_ddot, tau0_dddot,
+                                               tau1, tau1_dot, tau1_ddot, tau1_dddot, T)
+
+            # Sample to check constraints
+            t_samples = np.linspace(0, T, 100)
+            tau_vals, tau_dot_vals, _, _ = _eval_tau_poly(t_samples, coeffs)
+
+            # Compute velocity at samples
+            f_prime_vals = normalized_f_derivative(np.clip(tau_vals, -1, 1))
+            v_samples = np.abs(self.S * f_prime_vals * tau_dot_vals)
+
+            max_v = np.max(v_samples)
+            if max_v > self.robotVmax * 1.01:
+                T = T * (max_v / self.robotVmax) * 1.1
+            else:
+                break
+
+        return max(T, 0.01)
+
+    def position(self, t):
+        """Get position at time t."""
+        t = np.asarray(t)
+        scalar = t.ndim == 0
+        t = np.atleast_1d(t)
+
+        if self.T <= 0:
+            result = np.full_like(t, self.x0, dtype=float)
+            return float(result[0]) if scalar else result
+
+        tau, _, _, _ = _eval_tau_poly(np.clip(t, 0, self.T), self.coeffs)
+        tau = np.clip(tau, min(self.tau_start, self.tau_end), max(self.tau_start, self.tau_end))
+
+        f_vals = normalized_f(tau)
+        f_start = normalized_f(self.tau_start)
+
+        pos = self.x0 + self.S * (f_vals - f_start)
+        return float(pos[0]) if scalar else pos
+
+    def velocity(self, t):
+        """Get velocity at time t."""
+        t = np.asarray(t)
+        scalar = t.ndim == 0
+        t = np.atleast_1d(t)
+
+        if self.T <= 0:
+            result = np.zeros_like(t, dtype=float)
+            return float(result[0]) if scalar else result
+
+        tau, tau_dot, _, _ = _eval_tau_poly(np.clip(t, 0, self.T), self.coeffs)
+        tau = np.clip(tau, -1, 1)
+
+        f_prime = normalized_f_derivative(tau)
+        vel = self.S * f_prime * tau_dot
+
+        return float(vel[0]) if scalar else vel
+
+    def acceleration(self, t):
+        """Get acceleration at time t."""
+        t = np.asarray(t)
+        scalar = t.ndim == 0
+        t = np.atleast_1d(t)
+
+        if self.T <= 0:
+            result = np.zeros_like(t, dtype=float)
+            return float(result[0]) if scalar else result
+
+        tau, tau_dot, tau_ddot, _ = _eval_tau_poly(np.clip(t, 0, self.T), self.coeffs)
+        tau = np.clip(tau, -1, 1)
+
+        f_prime = normalized_f_derivative(tau)
+        f_dbl_prime = normalized_f_second_derivative(tau)
+
+        acc = self.S * (f_dbl_prime * tau_dot**2 + f_prime * tau_ddot)
+
+        return float(acc[0]) if scalar else acc
+
+    def jerk(self, t):
+        """Get jerk at time t."""
+        t = np.asarray(t)
+        scalar = t.ndim == 0
+        t = np.atleast_1d(t)
+
+        if self.T <= 0:
+            result = np.zeros_like(t, dtype=float)
+            return float(result[0]) if scalar else result
+
+        tau, tau_dot, tau_ddot, tau_dddot = _eval_tau_poly(np.clip(t, 0, self.T), self.coeffs)
+        tau = np.clip(tau, -1, 1)
+
+        f_prime = normalized_f_derivative(tau)
+        f_dbl_prime = normalized_f_second_derivative(tau)
+
+        # f''' numerically
+        eps = 1e-6
+        f_dbl_prime_plus = normalized_f_second_derivative(np.clip(tau + eps, -1, 1))
+        f_dbl_prime_minus = normalized_f_second_derivative(np.clip(tau - eps, -1, 1))
+        f_triple_prime = (f_dbl_prime_plus - f_dbl_prime_minus) / (2 * eps)
+
+        # j = S * (f''' * τ'³ + 3*f'' * τ' * τ'' + f' * τ''')
+        jrk = self.S * (f_triple_prime * tau_dot**3 +
+                        3 * f_dbl_prime * tau_dot * tau_ddot +
+                        f_prime * tau_dddot)
+
+        return float(jrk[0]) if scalar else jrk
+
+    def to_plan(self):
+        """Convert to plan dictionary for compatibility."""
+        return {
+            'T': self.T,
+            'tau_start': self.tau_start,
+            'tau_end': self.tau_end,
+            'x0': self.x0,
+            'x1': self.x_target,
+            'v0_actual': self.velocity(0),
+            'v1_actual': self.velocity(self.T),
+            'a0_actual': self.acceleration(0),
+            'a1_actual': self.acceleration(self.T),
+            'j0_actual': self.jerk(0),
+            'j1_actual': self.jerk(self.T),
+            'smooth_motion': self
+        }
+
+
+def continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None):
+    """
+    Continue from previous motion to reach x_target with PERFECT continuity.
+
+    Uses smooth time parameterization τ(t) to ensure ALL derivatives
+    (velocity, acceleration, jerk, snap, ...) are continuous at the junction.
+
+    Parameters:
+    -----------
+    prev_plan : dict
+        Previous motion plan
+    x_target : float
+        Target position to reach
+    T : float or None
+        Desired duration (if None, calculated from constraints)
+    robotVmax, robotAmax : float
+        Motion constraints
+
+    Returns a plan dictionary with smooth motion.
+    """
+    if robotVmax is None:
+        robotVmax = 10
+    if robotAmax is None:
+        robotAmax = 5
+
+    # Get current state from previous motion
+    x0 = prev_plan['x1']
+    v0 = prev_plan['v1_actual']
+    a0 = prev_plan['a1_actual']
+    tau_start = prev_plan['tau_end']
+
+    # Get jerk from previous motion (if smooth motion, use its jerk method)
+    if 'smooth_motion' in prev_plan:
+        j0 = prev_plan['smooth_motion'].jerk(prev_plan['T'])
+    elif 'j1_actual' in prev_plan:
+        j0 = prev_plan['j1_actual']
+    else:
+        # For linear τ motion, compute jerk at end
+        # j = S * f'''(τ) * (τ')³ where τ' = Δτ/T
+        prev_delta_tau = prev_plan['tau_end'] - prev_plan['tau_start']
+        prev_delta_f = normalized_f(prev_plan['tau_end']) - normalized_f(prev_plan['tau_start'])
+        prev_T = prev_plan['T']
+        prev_delta_x = prev_plan['x1'] - prev_plan['x0']
+
+        if prev_T > 0 and abs(prev_delta_f) > 1e-10:
+            S = prev_delta_x / prev_delta_f
+            tau_dot = prev_delta_tau / prev_T
+            tau = prev_plan['tau_end']
+
+            # f''' numerically
+            eps = 1e-6
+            f_dbl_prime_plus = normalized_f_second_derivative(min(tau + eps, 1))
+            f_dbl_prime_minus = normalized_f_second_derivative(max(tau - eps, -1))
+            f_triple_prime = (f_dbl_prime_plus - f_dbl_prime_minus) / (2 * eps)
+
+            j0 = S * f_triple_prime * tau_dot**3
+        else:
+            j0 = 0
+
+    # Get prev_tau_dot for the previous motion
+    if 'smooth_motion' in prev_plan:
+        # Get τ'(T) from the smooth motion
+        _, prev_tau_dot, _, _ = _eval_tau_poly(prev_plan['T'], prev_plan['smooth_motion'].coeffs)
+    else:
+        # Linear τ mapping
+        prev_delta_tau = prev_plan['tau_end'] - prev_plan['tau_start']
+        prev_T = prev_plan['T']
+        prev_tau_dot = prev_delta_tau / prev_T if prev_T > 0 else 0
+
+    # Estimate T if not provided
+    if T is None:
+        delta_x = abs(x_target - x0)
+        T_vmax = 2 * delta_x / robotVmax if robotVmax > 0 else 1
+        T_amax = 2 * sqrt(delta_x / robotAmax) if robotAmax > 0 else T_vmax
+        T = max(T_vmax, T_amax, 0.5)
+
+    motion = SmoothMotion(x0, x_target, v0, a0, j0, tau_start, prev_tau_dot, T,
+                          robotVmax, robotAmax)
+    return motion.to_plan()
+
+
+def evaluate_smooth_motion(plan, t):
+    """
+    Evaluate a motion plan (handles both regular and smooth motions).
+    """
+    if 'smooth_motion' in plan:
+        motion = plan['smooth_motion']
+        return motion.position(t), motion.velocity(t), motion.acceleration(t)
+    else:
+        return evaluate_motion(plan, t)
+
+
+def plan_motion(x0, x1, v0=0, v1=0, a0=0, a1=0, robotVmax=None, robotAmax=None,
+                tau_start=None, tau_end=None):
+    """
+    Plan motion from (x0, v0, a0) to (x1, v1, a1).
+
+    For PERFECT continuity when chaining motions, pass tau_start from the
+    previous motion's tau_end. This ensures you're at the exact same point
+    on the S-curve.
+
+    IMPORTANT: The S-curve traces a LOOP in phase space.
+    At any τ, velocity and acceleration are coupled - you can't specify
+    arbitrary (v, a) pairs.
     """
     if robotVmax is None:
         robotVmax = float('inf')
     if robotAmax is None:
         robotAmax = float('inf')
 
-    T, tau_start, tau_end = generalized_motion_time(
-        robotVmax, robotAmax, x0, x1, v0, v1, a0, a1
-    )
+    # If tau values are provided directly, use them (for motion chaining)
+    if tau_start is not None or tau_end is not None:
+        _tau_start = tau_start if tau_start is not None else -1.0
+        _tau_end = tau_end if tau_end is not None else 1.0
 
-    # Calculate actual boundary values
-    actual_v0 = get_velocity(0, T, x0, x1, tau_start, tau_end) if T > 0 else 0
-    actual_v1 = get_velocity(T, T, x0, x1, tau_start, tau_end) if T > 0 else 0
-    actual_a0 = get_acceleration(0, T, x0, x1, tau_start, tau_end) if T > 0 else 0
-    actual_a1 = get_acceleration(T, T, x0, x1, tau_start, tau_end) if T > 0 else 0
+        # Calculate T based on the fixed tau values
+        delta_tau = _tau_end - _tau_start
+        delta_f = normalized_f(_tau_end) - normalized_f(_tau_start)
+        delta_x = x1 - x0
+
+        if abs(delta_f) < 1e-10 or abs(delta_tau) < 1e-10:
+            T = 0.0
+        else:
+            # Use vmax/amax constraints to find minimum T
+            tau_range = np.linspace(_tau_start, _tau_end, 100)
+            f_prime_max = np.max(normalized_f_derivative(tau_range))
+            f_dbl_prime_max = np.max(np.abs(normalized_f_second_derivative(tau_range)))
+
+            T_vmax = abs(delta_x) * delta_tau * f_prime_max / (delta_f * robotVmax)
+            T_amax = sqrt(abs(delta_x) * delta_tau**2 * f_dbl_prime_max / (delta_f * robotAmax))
+            T = max(T_vmax, T_amax)
+
+        tau_start, tau_end = _tau_start, _tau_end
+    else:
+        T, tau_start, tau_end = generalized_motion_time(
+            robotVmax, robotAmax, x0, x1, v0, v1, a0, a1
+        )
+
+    v0_actual = get_velocity(0, T, x0, x1, tau_start, tau_end) if T > 0 else 0
+    v1_actual = get_velocity(T, T, x0, x1, tau_start, tau_end) if T > 0 else 0
+    a0_actual = get_acceleration(0, T, x0, x1, tau_start, tau_end) if T > 0 else 0
+    a1_actual = get_acceleration(T, T, x0, x1, tau_start, tau_end) if T > 0 else 0
 
     return {
         'T': T,
@@ -569,27 +760,21 @@ def plan_motion(x0, x1, v0=0, v1=0, a0=0, a1=0, robotVmax=None, robotAmax=None):
         'x1': x1,
         'v0_requested': v0,
         'v1_requested': v1,
-        'v0_actual': actual_v0,
-        'v1_actual': actual_v1,
-        'a0_actual': actual_a0,
-        'a1_actual': actual_a1
+        'a0_requested': a0,
+        'a1_requested': a1,
+        'v0_actual': v0_actual,
+        'v1_actual': v1_actual,
+        'a0_actual': a0_actual,
+        'a1_actual': a1_actual
     }
 
 
 def evaluate_motion(plan, t):
-    """
-    Evaluate position, velocity, and acceleration at time t given a motion plan.
-    """
-    pos = generalized_sCurve(
-        t, plan['T'], plan['x0'], plan['x1'],
-        plan['tau_start'], plan['tau_end']
-    )
-    vel = get_velocity(
-        t, plan['T'], plan['x0'], plan['x1'],
-        plan['tau_start'], plan['tau_end']
-    )
-    acc = get_acceleration(
-        t, plan['T'], plan['x0'], plan['x1'],
-        plan['tau_start'], plan['tau_end']
-    )
+    """Evaluate (position, velocity, acceleration) at time t."""
+    pos = generalized_sCurve(t, plan['T'], plan['x0'], plan['x1'],
+                              plan['tau_start'], plan['tau_end'])
+    vel = get_velocity(t, plan['T'], plan['x0'], plan['x1'],
+                       plan['tau_start'], plan['tau_end'])
+    acc = get_acceleration(t, plan['T'], plan['x0'], plan['x1'],
+                           plan['tau_start'], plan['tau_end'])
     return pos, vel, acc
