@@ -310,10 +310,10 @@ def plot_curve_segment_visualization():
 
 
 def plot_motion_continuation():
-    """Demonstrate PERFECT motion continuation to ANY target with smooth τ(t)."""
+    """Demonstrate PERFECT C∞ smooth motion continuation using nested beta curves."""
     from scurvebeta.generalized import continue_motion, evaluate_smooth_motion
 
-    fig, axs = plt.subplots(4, 1, figsize=(12, 12))
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
 
     robotVmax, robotAmax = 6, 3
 
@@ -335,8 +335,7 @@ def plot_motion_continuation():
 
     t2 = np.linspace(0, T2, 301)
     pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
-    # Use analytical jerk from smooth motion
-    jerk2 = plan2['smooth_motion'].jerk(t2)
+    motion2 = plan2['smooth_motion']
 
     print(f"\nMotion 2 (smooth continuation): {plan2['x0']:.2f} -> {plan2['x1']:.2f}")
     print(f"  Duration: {T2:.3f}s")
@@ -356,57 +355,58 @@ def plot_motion_continuation():
     vel_combined = np.concatenate([vel1, vel2[1:]])
     acc_combined = np.concatenate([acc1, acc2[1:]])
 
-    # Compute jerk: numerical for motion 1, analytical for motion 2
+    # Compute derivatives for motion 2
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
+    pop2 = motion2.pop(t2)
+    lock2 = motion2.lock(t2)
+    drop2 = motion2.drop(t2)
+
+    # Compute derivatives numerically for motion 1
     dt1 = t1[1] - t1[0]
     jerk1 = np.gradient(acc1, dt1)
+    snap1 = np.gradient(jerk1, dt1)
+    crackle1 = np.gradient(snap1, dt1)
+    pop1 = np.gradient(crackle1, dt1)
+    lock1 = np.gradient(pop1, dt1)
+    drop1 = np.gradient(lock1, dt1)
+
+    # Combined arrays
     jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    pop_combined = np.concatenate([pop1, pop2[1:]])
+    lock_combined = np.concatenate([lock1, lock2[1:]])
+    drop_combined = np.concatenate([drop1, drop2[1:]])
 
-    # Plot position
-    axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
-    axs[0].axvline(x=T1, color='r', linestyle='--', alpha=0.5, label='Transition (perfect continuity)')
-    axs[0].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=80, zorder=5)
-    axs[0].set_ylabel('Position')
-    axs[0].set_title(f'PERFECT Motion Continuation to ANY Target (x={x_target})')
-    axs[0].legend()
-    axs[0].grid(True, alpha=0.3)
-    axs[0].annotate('Start\n(rest)', (0, pos1[0]), textcoords="offset points", xytext=(10, 10), fontsize=9)
-    axs[0].annotate(f'Transition\n(v={plan1["v1_actual"]:.2f})', (T1, pos1[-1]),
-                    textcoords="offset points", xytext=(10, -25), fontsize=9)
-    axs[0].annotate(f'End\n(rest, x={x_target})', (T1+T2, pos2[-1]),
-                    textcoords="offset points", xytext=(-50, 10), fontsize=9)
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined,
+            snap_combined, crackle_combined, pop_combined, lock_combined, drop_combined]
 
-    # Plot velocity
-    axs[1].plot(t_combined, vel_combined, 'g-', linewidth=2)
-    axs[1].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[1].axhline(y=robotVmax, color='orange', linestyle='--', alpha=0.5, label=f'Vmax={robotVmax}')
-    axs[1].scatter([0, T1, T1+T2], [vel1[0], vel1[-1], vel2[-1]], color='red', s=80, zorder=5)
-    axs[1].set_ylabel('Velocity')
-    axs[1].legend()
-    axs[1].grid(True, alpha=0.3)
-    axs[1].annotate('NO JUMP', (T1, vel1[-1]), textcoords="offset points",
-                    xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t_combined, d, color=color, linewidth=2)
+        axs[i].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
 
-    # Plot acceleration
-    axs[2].plot(t_combined, acc_combined, 'orange', linewidth=2)
-    axs[2].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[2].axhline(y=robotAmax, color='r', linestyle='--', alpha=0.5, label=f'Amax={robotAmax}')
-    axs[2].axhline(y=-robotAmax, color='r', linestyle='--', alpha=0.5)
-    axs[2].scatter([0, T1, T1+T2], [acc1[0], acc1[-1], acc2[-1]], color='red', s=80, zorder=5)
-    axs[2].set_ylabel('Acceleration')
-    axs[2].legend()
-    axs[2].grid(True, alpha=0.3)
-    axs[2].annotate('NO JUMP', (T1, acc1[-1]), textcoords="offset points",
-                    xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
+        # Annotate key features
+        if i == 0:
+            axs[i].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=60, zorder=5)
+            axs[i].annotate('Start', (0, pos1[0]), textcoords="offset points", xytext=(10, 10), fontsize=8)
+            axs[i].annotate(f'x={x_target}', (T1+T2, pos2[-1]), textcoords="offset points", xytext=(-40, 10), fontsize=8)
+        elif i < 4:
+            axs[i].annotate('Continuous!', (T1, d[len(t1)]),
+                            textcoords="offset points", xytext=(15, 5), fontsize=9, color='green', fontweight='bold')
 
-    # Plot jerk
-    axs[3].plot(t_combined, jerk_combined, 'purple', linewidth=2)
-    axs[3].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[3].set_xlabel('Time (s)')
-    axs[3].set_ylabel('Jerk')
-    axs[3].grid(True, alpha=0.3)
-    axs[3].annotate('NO JUMP (smooth τ(t)!)', (T1, jerk_combined[len(t1)]),
-                    textcoords="offset points", xytext=(20, 10), fontsize=10, color='green', fontweight='bold')
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+    axs[-1].annotate('ALL derivatives → 0 smoothly!', (T1 + T2 - 1, 0),
+                     textcoords="offset points", xytext=(-100, 20), fontsize=10, color='green', fontweight='bold')
 
+    plt.suptitle('C∞ Smooth Motion: 9 Derivatives (Position through 8th derivative)', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('/home/user/s-curve-beta/img/motion_continuation.png', dpi=150, bbox_inches='tight')
     print("\nSaved: img/motion_continuation.png")
@@ -414,10 +414,10 @@ def plot_motion_continuation():
 
 
 def plot_direction_reversal():
-    """Demonstrate smooth direction reversal to reach any target."""
+    """Demonstrate smooth direction reversal using nested beta curves."""
     from scurvebeta.generalized import continue_motion, evaluate_smooth_motion
 
-    fig, axs = plt.subplots(4, 1, figsize=(12, 12))
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
 
     robotVmax, robotAmax = 6, 3
 
@@ -432,6 +432,7 @@ def plot_direction_reversal():
     x_target = 3
     plan2 = continue_motion(plan1, x_target=x_target, robotVmax=robotVmax, robotAmax=robotAmax)
     T2 = plan2['T']
+    motion2 = plan2['smooth_motion']
 
     print(f"\nSmooth continuation to x={x_target}:")
     print(f"  Motion 2: {plan2['x0']:.2f} -> {plan2['x1']:.2f}, T={T2:.3f}s")
@@ -448,59 +449,65 @@ def plot_direction_reversal():
 
     pos1, vel1, acc1 = evaluate_motion(plan1, t1)
     pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
-    jerk2 = plan2['smooth_motion'].jerk(t2)
+
+    # Compute derivatives for motion 2
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
+    pop2 = motion2.pop(t2)
+    lock2 = motion2.lock(t2)
+    drop2 = motion2.drop(t2)
+
+    # Compute derivatives numerically for motion 1
+    dt1 = t1[1] - t1[0]
+    jerk1 = np.gradient(acc1, dt1)
+    snap1 = np.gradient(jerk1, dt1)
+    crackle1 = np.gradient(snap1, dt1)
+    pop1 = np.gradient(crackle1, dt1)
+    lock1 = np.gradient(pop1, dt1)
+    drop1 = np.gradient(lock1, dt1)
 
     # Combined
     t_combined = np.concatenate([t1, T1 + t2[1:]])
     pos_combined = np.concatenate([pos1, pos2[1:]])
     vel_combined = np.concatenate([vel1, vel2[1:]])
     acc_combined = np.concatenate([acc1, acc2[1:]])
-
-    # Jerk: numerical for motion 1, analytical for motion 2
-    dt1 = t1[1] - t1[0]
-    jerk1 = np.gradient(acc1, dt1)
     jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    pop_combined = np.concatenate([pop1, pop2[1:]])
+    lock_combined = np.concatenate([lock1, lock2[1:]])
+    drop_combined = np.concatenate([drop1, drop2[1:]])
 
-    # Plot position
-    axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
-    axs[0].axhline(y=x_target, color='green', linestyle='--', alpha=0.5, label=f'Target x={x_target}')
-    axs[0].axvline(x=T1, color='r', linestyle='--', alpha=0.5, label='Transition')
-    axs[0].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=80, zorder=5)
-    axs[0].set_ylabel('Position')
-    axs[0].set_title('Direction Reversal with Perfect Continuity (using smooth τ(t))')
-    axs[0].legend()
-    axs[0].grid(True, alpha=0.3)
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined,
+            snap_combined, crackle_combined, pop_combined, lock_combined, drop_combined]
 
-    # Plot velocity
-    axs[1].plot(t_combined, vel_combined, 'g-', linewidth=2)
-    axs[1].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-    axs[1].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[1].axhline(y=robotVmax, color='orange', linestyle='--', alpha=0.5, label=f'±Vmax')
-    axs[1].axhline(y=-robotVmax, color='orange', linestyle='--', alpha=0.5)
-    axs[1].set_ylabel('Velocity')
-    axs[1].legend()
-    axs[1].grid(True, alpha=0.3)
-    axs[1].annotate('Smooth decel\n& reversal', (T1 + T2/2, min(vel2)),
-                    textcoords="offset points", xytext=(10, -20), fontsize=9)
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t_combined, d, color=color, linewidth=2)
+        axs[i].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
 
-    # Plot acceleration
-    axs[2].plot(t_combined, acc_combined, 'orange', linewidth=2)
-    axs[2].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-    axs[2].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[2].axhline(y=robotAmax, color='r', linestyle='--', alpha=0.5, label=f'±Amax')
-    axs[2].axhline(y=-robotAmax, color='r', linestyle='--', alpha=0.5)
-    axs[2].set_ylabel('Acceleration')
-    axs[2].legend()
-    axs[2].grid(True, alpha=0.3)
+        # Annotate key features
+        if i == 0:
+            axs[i].axhline(y=x_target, color='green', linestyle='--', alpha=0.5, label=f'Target x={x_target}')
+            axs[i].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=60, zorder=5)
+            axs[i].legend(fontsize=9)
+        elif i == 1:
+            axs[i].axhline(y=robotVmax, color='orange', linestyle='--', alpha=0.3)
+            axs[i].axhline(y=-robotVmax, color='orange', linestyle='--', alpha=0.3)
+            axs[i].annotate('Smooth reversal', (T1 + T2*0.4, min(vel2)*0.8),
+                            textcoords="offset points", xytext=(0, 0), fontsize=9, color='green')
 
-    # Plot jerk
-    axs[3].plot(t_combined, jerk_combined, 'purple', linewidth=2)
-    axs[3].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-    axs[3].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
-    axs[3].set_xlabel('Time (s)')
-    axs[3].set_ylabel('Jerk')
-    axs[3].grid(True, alpha=0.3)
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+    axs[-1].annotate('ALL derivatives → 0 smoothly!', (T1 + T2 - 0.5, 0),
+                     textcoords="offset points", xytext=(-100, 20), fontsize=10, color='green', fontweight='bold')
 
+    plt.suptitle('Direction Reversal with C∞ Smooth Beta Curves (9 derivatives)', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('/home/user/s-curve-beta/img/direction_reversal.png', dpi=150, bbox_inches='tight')
     print("\nSaved: img/direction_reversal.png")
