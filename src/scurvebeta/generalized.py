@@ -611,7 +611,7 @@ class SmoothMotion:
     """
 
     def __init__(self, x0, x_target, v0, a0, j0, tau_start, prev_tau_dot, T,
-                 robotVmax=None, robotAmax=None):
+                 robotVmax=None, robotAmax=None, snap0=0, crackle0=0, pop0=0):
         """
         Create a C∞ smooth motion.
 
@@ -625,12 +625,18 @@ class SmoothMotion:
         tau_start : float - Starting τ value on S-curve
         prev_tau_dot : float - τ'(t) from previous motion
         T : float - Desired motion duration
+        snap0 : float - Starting snap (4th derivative)
+        crackle0 : float - Starting crackle (5th derivative)
+        pop0 : float - Starting pop (6th derivative)
         """
         self.x0 = x0
         self.x_target = x_target
         self.v0 = v0
         self.a0 = a0
         self.j0 = j0
+        self.snap0 = snap0
+        self.crackle0 = crackle0
+        self.pop0 = pop0
         self.tau_start = tau_start
         self.tau_end = 1.0  # End at rest
         self.robotVmax = robotVmax if robotVmax else float('inf')
@@ -649,50 +655,102 @@ class SmoothMotion:
         # Spatial scaling: S maps normalized f to actual position
         self.S = delta_x / delta_f
 
-        # Compute required τ derivatives from physical derivatives
-        # v = S * f'(τ) * τ'
-        # a = S * (f''(τ) * τ'² + f'(τ) * τ'')
-        # j = S * (f'''(τ) * τ'³ + 3*f''(τ) * τ' * τ'' + f'(τ) * τ''')
+        # Compute f derivatives at tau_start
+        f_derivs = self._compute_f_derivatives(tau_start, n=7)
+        f_p, f_pp, f_ppp, f_pppp, f_5, f_6, f_7 = f_derivs
 
-        f_p = normalized_f_derivative(tau_start)
-        f_pp = normalized_f_second_derivative(tau_start)
+        # Solve for τ derivatives from physical derivatives
+        # Using the chain rule formulas:
+        # v = S * f' * τ'
+        # a = S * (f'' * τ'² + f' * τ'')
+        # j = S * (f''' * τ'³ + 3*f'' * τ' * τ'' + f' * τ''')
+        # snap = S * (f'''' * τ'⁴ + 6*f''' * τ'² * τ'' + 4*f'' * τ' * τ''' + 3*f'' * τ''² + f' * τ'''')
+        # etc.
 
-        # f''' numerically
-        eps = 1e-6
-        f_pp_plus = normalized_f_second_derivative(min(tau_start + eps, 1))
-        f_pp_minus = normalized_f_second_derivative(max(tau_start - eps, -1))
-        f_ppp = (f_pp_plus - f_pp_minus) / (2 * eps)
-
-        # f'''' numerically
-        f_ppp_plus = (normalized_f_second_derivative(min(tau_start + 2*eps, 1)) -
-                      normalized_f_second_derivative(tau_start)) / (2 * eps)
-        f_ppp_minus = (normalized_f_second_derivative(tau_start) -
-                       normalized_f_second_derivative(max(tau_start - 2*eps, -1))) / (2 * eps)
-        f_pppp = (f_ppp_plus - f_ppp_minus) / (2 * eps)
-
-        # Solve for τ', τ'', τ'''
         if abs(self.S * f_p) < 1e-10:
-            tau_derivs_0 = [prev_tau_dot, 0, 0]
+            tau_derivs_0 = [prev_tau_dot, 0, 0, 0, 0, 0]
         else:
+            S = self.S
+
             # τ' = v / (S * f')
-            tau_dot_0 = v0 / (self.S * f_p)
+            td1 = v0 / (S * f_p)
 
-            # a = S * (f'' * τ'² + f' * τ'')
             # τ'' = (a - S * f'' * τ'²) / (S * f')
-            tau_ddot_0 = (a0 - self.S * f_pp * tau_dot_0**2) / (self.S * f_p)
+            td2 = (a0 - S * f_pp * td1**2) / (S * f_p)
 
-            # j = S * (f''' * τ'³ + 3*f'' * τ' * τ'' + f' * τ''')
             # τ''' = (j - S * (f''' * τ'³ + 3*f'' * τ' * τ'')) / (S * f')
-            tau_dddot_0 = (j0 - self.S * (f_ppp * tau_dot_0**3 +
-                           3 * f_pp * tau_dot_0 * tau_ddot_0)) / (self.S * f_p)
+            td3 = (j0 - S * (f_ppp * td1**3 + 3 * f_pp * td1 * td2)) / (S * f_p)
 
-            tau_derivs_0 = [tau_dot_0, tau_ddot_0, tau_dddot_0]
+            # Check for direction reversal or complex motion
+            # If τ' is opposite sign to delta_tau, motion is complex
+            is_complex = (td1 * delta_tau < 0)
+
+            if is_complex:
+                # For complex motions (direction reversal), only match first 3 derivatives
+                # to avoid numerical instability
+                tau_derivs_0 = [td1, td2, td3]
+            else:
+                # τ'''' from snap
+                # snap = S * (f'''' * τ'⁴ + 6*f''' * τ'² * τ'' + 4*f'' * τ' * τ''' + 3*f'' * τ''² + f' * τ'''')
+                td4 = (snap0 - S * (f_pppp * td1**4 + 6 * f_ppp * td1**2 * td2 +
+                                    4 * f_pp * td1 * td3 + 3 * f_pp * td2**2)) / (S * f_p)
+
+                # τ''''' from crackle (5th derivative)
+                td5 = (crackle0 - S * (f_5 * td1**5 + 10 * f_pppp * td1**3 * td2 +
+                                       15 * f_ppp * td1 * td2**2 + 10 * f_ppp * td1**2 * td3 +
+                                       10 * f_pp * td2 * td3 + 5 * f_pp * td1 * td4)) / (S * f_p)
+
+                # τ'''''' from pop (6th derivative)
+                td6 = (pop0 - S * (f_6 * td1**6 + 15 * f_5 * td1**4 * td2 +
+                                   20 * f_pppp * td1**3 * td3 + 45 * f_pppp * td1**2 * td2**2 +
+                                   15 * f_ppp * td2**3 + 60 * f_ppp * td1 * td2 * td3 +
+                                   15 * f_ppp * td1**2 * td4 + 10 * f_pp * td3**2 +
+                                   15 * f_pp * td2 * td4 + 6 * f_pp * td1 * td5)) / (S * f_p)
+
+                tau_derivs_0 = [td1, td2, td3, td4, td5, td6]
 
         # Find optimal T
         self.T = self._find_optimal_T(T, tau_start, tau_derivs_0)
 
         # Create the C∞ smooth τ mapping
         self.tau_mapping = SmoothTauMapping(tau_start, self.tau_end, tau_derivs_0, self.T)
+
+    def _compute_f_derivatives(self, tau, n=7):
+        """Compute f', f'', f''', ... f^(n) at tau using numerical differentiation."""
+        eps = 1e-5
+        derivs = []
+
+        # f'
+        derivs.append(normalized_f_derivative(tau))
+
+        # f''
+        derivs.append(normalized_f_second_derivative(tau))
+
+        # f''' and higher using numerical differentiation of f''
+        def f_pp(t):
+            return normalized_f_second_derivative(np.clip(t, -1+1e-10, 1-1e-10))
+
+        # f'''
+        f_ppp = (f_pp(tau + eps) - f_pp(tau - eps)) / (2 * eps)
+        derivs.append(f_ppp)
+
+        # f''''
+        f_pppp = (f_pp(tau + 2*eps) - 2*f_pp(tau) + f_pp(tau - 2*eps)) / (4 * eps**2)
+        derivs.append(f_pppp)
+
+        # f'''''
+        f_5 = (f_pp(tau + 2*eps) - 2*f_pp(tau + eps) + 2*f_pp(tau - eps) - f_pp(tau - 2*eps)) / (2 * eps**3)
+        derivs.append(f_5)
+
+        # f''''''
+        f_6 = (f_pp(tau + 3*eps) - 3*f_pp(tau + eps) + 3*f_pp(tau - eps) - f_pp(tau - 3*eps)) / (8 * eps**3)
+        derivs.append(f_6)
+
+        # f'''''''
+        f_7 = (f_pp(tau + 4*eps) - 4*f_pp(tau + 2*eps) + 6*f_pp(tau) - 4*f_pp(tau - 2*eps) + f_pp(tau - 4*eps)) / (16 * eps**4)
+        derivs.append(f_7)
+
+        return derivs[:n]
 
     def _find_optimal_T(self, T_initial, tau_start, tau_derivs_0):
         """Find T that respects velocity and acceleration constraints."""
@@ -981,13 +1039,21 @@ def continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None)
         plan = plan_motion(x0, x_target, v0=0, v1=0, robotVmax=robotVmax, robotAmax=robotAmax)
         return plan
 
-    # Get jerk from previous motion (if smooth motion, use its jerk method)
+    # Get higher derivatives from previous motion
     if 'smooth_motion' in prev_plan:
-        j0 = prev_plan['smooth_motion'].jerk(prev_plan['T'])
+        prev_motion = prev_plan['smooth_motion']
+        prev_T = prev_plan['T']
+        j0 = prev_motion.jerk(prev_T)
+        snap0 = prev_motion.snap(prev_T)
+        crackle0 = prev_motion.crackle(prev_T)
+        pop0 = prev_motion.pop(prev_T)
     elif 'j1_actual' in prev_plan:
         j0 = prev_plan['j1_actual']
+        snap0 = prev_plan.get('snap1_actual', 0)
+        crackle0 = 0
+        pop0 = 0
     else:
-        # For linear τ motion, compute jerk at end
+        # For linear τ motion, compute derivatives at end
         prev_delta_tau = prev_plan['tau_end'] - prev_plan['tau_start']
         prev_delta_f = normalized_f(prev_plan['tau_end']) - normalized_f(prev_plan['tau_start'])
         prev_T = prev_plan['T']
@@ -998,20 +1064,33 @@ def continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None)
             tau_dot = prev_delta_tau / prev_T
             tau = prev_plan['tau_end']
 
-            # f''' numerically
-            eps = 1e-6
-            f_dbl_prime_plus = normalized_f_second_derivative(min(tau + eps, 1))
-            f_dbl_prime_minus = normalized_f_second_derivative(max(tau - eps, -1))
-            f_triple_prime = (f_dbl_prime_plus - f_dbl_prime_minus) / (2 * eps)
+            # For linear τ mapping: τ'' = τ''' = ... = 0
+            # So j = S * f''' * τ'³, snap = S * f'''' * τ'⁴, etc.
+            eps = 1e-5
 
-            j0 = S * f_triple_prime * tau_dot**3
+            def f_pp(t):
+                return normalized_f_second_derivative(np.clip(t, -1+1e-10, 1-1e-10))
+
+            f_ppp = (f_pp(tau + eps) - f_pp(tau - eps)) / (2 * eps)
+            f_pppp = (f_pp(tau + 2*eps) - 2*f_pp(tau) + f_pp(tau - 2*eps)) / (4 * eps**2)
+            f_5 = (f_pp(tau + 2*eps) - 2*f_pp(tau + eps) + 2*f_pp(tau - eps) - f_pp(tau - 2*eps)) / (2 * eps**3)
+            f_6 = (f_pp(tau + 3*eps) - 3*f_pp(tau + eps) + 3*f_pp(tau - eps) - f_pp(tau - 3*eps)) / (8 * eps**3)
+
+            j0 = S * f_ppp * tau_dot**3
+            snap0 = S * f_pppp * tau_dot**4
+            crackle0 = S * f_5 * tau_dot**5
+            pop0 = S * f_6 * tau_dot**6
         else:
             j0 = 0
+            snap0 = 0
+            crackle0 = 0
+            pop0 = 0
 
     # Get prev_tau_dot for the previous motion
     if 'smooth_motion' in prev_plan and prev_plan['smooth_motion'].tau_mapping is not None:
         # Get τ'(T) from the smooth motion's beta mapping
-        _, prev_tau_dot, _, _, _ = prev_plan['smooth_motion'].tau_mapping.eval(prev_plan['T'])
+        tau_result = prev_plan['smooth_motion'].tau_mapping.eval(prev_plan['T'], max_deriv=0)
+        prev_tau_dot = 0  # At end of motion, τ' = 0 due to flat function
     else:
         # Linear τ mapping
         prev_delta_tau = prev_plan['tau_end'] - prev_plan['tau_start']
@@ -1026,7 +1105,7 @@ def continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None)
         T = max(T_vmax, T_amax, 0.5)
 
     motion = SmoothMotion(x0, x_target, v0, a0, j0, tau_start, prev_tau_dot, T,
-                          robotVmax, robotAmax)
+                          robotVmax, robotAmax, snap0=snap0, crackle0=crackle0, pop0=pop0)
     return motion.to_plan()
 
 
