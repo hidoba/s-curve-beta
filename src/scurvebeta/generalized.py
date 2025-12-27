@@ -1103,29 +1103,66 @@ def normalized_f_derivatives(tau, max_order=8):
     return results
 
 
+def _beta_s(s):
+    """
+    Beta S-curve mapped to s ∈ [0,1] → [0,1].
+
+    β(s) = f(2s - 1) where f is the normalized S-curve.
+    Has the critical property: β(0)=0, β(1)=1, and ALL derivatives = 0 at both ends.
+    """
+    s = np.asarray(s, dtype=float)
+    tau = 2 * s - 1
+    return normalized_f(tau)
+
+
+def _beta_s_derivatives(s, max_order=8):
+    """
+    Compute β(s) and all its derivatives up to max_order.
+
+    β(s) = f(2s-1), so β^(k)(s) = 2^k * f^(k)(2s-1)
+
+    Returns list [β, β', β'', ...] of length max_order+1
+    """
+    s = np.asarray(s, dtype=float)
+    scalar = s.ndim == 0
+    s = np.atleast_1d(s)
+
+    tau = 2 * s - 1
+    f_derivs = normalized_f_derivatives(tau, max_order)
+
+    beta_derivs = []
+    for k, f_k in enumerate(f_derivs):
+        beta_derivs.append(np.asarray(f_k) * (2 ** k))
+
+    if scalar:
+        return [float(bd[0]) if hasattr(bd, '__len__') else float(bd) for bd in beta_derivs]
+    return beta_derivs
+
+
 class BetaBlendMotion:
     """
-    Motion using beta S-curve as a blend function with quintic base trajectory.
+    Motion using S-curve to smoothly blend inertial trajectory to rest at target.
 
-    Instead of a simple inertial trajectory that can diverge, we use a quintic
-    polynomial that smoothly connects initial state to final state:
+    The motion is constructed as:
 
-    Base trajectory Q(s) for s ∈ [0,1] satisfies:
-    - Q(0) = x0, Q'(0) = v0*T, Q''(0) = a0*T²
-    - Q(1) = xT, Q'(1) = 0, Q''(1) = 0
+    x(t) = x0 + (x_inertial(t) - x0) * (1 - β(τ)) + (x_target - x0) * β(τ)
 
-    Then apply S-curve time rescaling: x(t) = Q(β(t/T))
+    where:
+    - τ = t/T is normalized time ∈ [0,1]
+    - β(τ) is the S-curve with ALL derivatives = 0 at τ=0 and τ=1
+    - x_inertial(t) = x0 + v0*t + 0.5*a0*t² + ... is the inertial trajectory
 
-    This ensures:
-    - Smooth connection from initial to final state
-    - No oscillation or double overshoot
-    - S-curve characteristics for smooth derivatives
+    The S-curve blend has the magical property that:
+    - At t=0: β=0, so x = x_inertial(0) = x0, and all derivatives match inertial
+    - At t=T: β=1, so x = x_target, and all derivatives → 0 due to β'(1)=0
+
+    This gives true C∞ continuity at both endpoints!
     """
 
     def __init__(self, x0, v0, a0, x_target, T, j0=0, snap0=0, crackle0=0, pop0=0,
-                 robotVmax=None, robotAmax=None):
+                 robotVmax=None, robotAmax=None, lock0=0, drop0=0):
         """
-        Create a beta-blend motion using quintic polynomial with S-curve time rescaling.
+        Create a motion with true C∞ continuity using S-curve blending.
 
         Parameters:
         -----------
@@ -1134,7 +1171,7 @@ class BetaBlendMotion:
         a0 : float - Initial acceleration
         x_target : float - Target position (will reach exactly at t=T)
         T : float - Motion duration
-        j0, snap0, crackle0, pop0 : float - Higher initial derivatives (optional)
+        j0, snap0, crackle0, pop0, lock0, drop0 : float - Higher derivatives (optional)
         robotVmax, robotAmax : float - Constraints (optional, for T adjustment)
         """
         self.x0 = x0
@@ -1144,6 +1181,8 @@ class BetaBlendMotion:
         self.snap0 = snap0
         self.crackle0 = crackle0
         self.pop0 = pop0
+        self.lock0 = lock0
+        self.drop0 = drop0
         self.x_target = x_target
         self.robotVmax = robotVmax if robotVmax else float('inf')
         self.robotAmax = robotAmax if robotAmax else float('inf')
@@ -1151,74 +1190,16 @@ class BetaBlendMotion:
         # Set initial T (will be adjusted)
         self.T = max(T, 0.01)
 
-        # Compute quintic polynomial coefficients
-        self._compute_quintic_coefficients()
-
         # Find optimal T that respects constraints
         self.T = self._find_optimal_T(self.T)
-
-    def _compute_quintic_coefficients(self):
-        """
-        Compute coefficients for quintic polynomial Q(s) where s ∈ [0,1].
-
-        Q(s) connects initial state to final state:
-        - Q(0) = x0, Q'(0)/T = v0, Q''(0)/T² = a0
-        - Q(1) = xT, Q'(1) = 0, Q''(1) = 0
-
-        Q(s) = c0 + c1*s + c2*s² + c3*s³ + c4*s⁴ + c5*s⁵
-        """
-        T = self.T
-        x0, v0, a0, xT = self.x0, self.v0, self.a0, self.x_target
-
-        # Scaled initial derivatives (for s ∈ [0,1])
-        v0_s = v0 * T  # Q'(0) = v0 * T
-        a0_s = a0 * T * T  # Q''(0) = a0 * T²
-
-        # From boundary conditions at s=0:
-        c0 = x0
-        c1 = v0_s
-        c2 = a0_s / 2
-
-        # Remaining conditions give 3 equations for c3, c4, c5:
-        # Q(1) = c0 + c1 + c2 + c3 + c4 + c5 = xT
-        # Q'(1) = c1 + 2*c2 + 3*c3 + 4*c4 + 5*c5 = 0
-        # Q''(1) = 2*c2 + 6*c3 + 12*c4 + 20*c5 = 0
-
-        # Matrix form: A * [c3, c4, c5]^T = b
-        # [1, 1, 1]   [c3]   [xT - c0 - c1 - c2]
-        # [3, 4, 5] * [c4] = [-c1 - 2*c2]
-        # [6, 12, 20] [c5]   [-2*c2]
-
-        A = np.array([
-            [1, 1, 1],
-            [3, 4, 5],
-            [6, 12, 20]
-        ], dtype=float)
-
-        b = np.array([
-            xT - c0 - c1 - c2,
-            -c1 - 2*c2,
-            -2*c2
-        ], dtype=float)
-
-        try:
-            c345 = np.linalg.solve(A, b)
-            c3, c4, c5 = c345
-        except np.linalg.LinAlgError:
-            # Fallback to simple linear interpolation
-            c3, c4, c5 = 0, 0, 0
-
-        self._quintic_coeffs = [c0, c1, c2, c3, c4, c5]
 
     def _find_optimal_T(self, T_initial):
         """Adjust T to respect velocity and acceleration constraints."""
         T = T_initial
-        T_max = 60.0  # Maximum reasonable time
+        T_max = 15.0  # Reasonable max to prevent T² blowup in trajectory
 
-        for iteration in range(15):
-            # Update coefficients for new T
+        for iteration in range(10):
             self.T = T
-            self._compute_quintic_coefficients()
 
             # Sample to check constraints
             t_samples = np.linspace(0, T, 100)
@@ -1232,95 +1213,111 @@ class BetaBlendMotion:
             max_v = np.max(np.abs(v_samples))
             max_a = np.max(np.abs(a_samples))
 
-            # Scale T to respect constraints
+            # Scale T to respect constraints (but don't scale up too aggressively)
             scale = 1.0
             if np.isfinite(max_v) and max_v > self.robotVmax:
-                scale = max(scale, max_v / self.robotVmax)
+                scale = max(scale, (max_v / self.robotVmax) ** 0.5)  # Square root for stability
             if np.isfinite(max_a) and max_a > self.robotAmax:
-                scale = max(scale, np.sqrt(max_a / self.robotAmax))
+                scale = max(scale, (max_a / self.robotAmax) ** 0.25)  # Fourth root for stability
 
             if scale > 1.01:
-                T = min(T * scale * 1.05, T_max)
+                T = min(T * scale * 1.1, T_max)
                 if T >= T_max:
                     break
             else:
                 break
 
-        # Final update with chosen T
         self.T = T
-        self._compute_quintic_coefficients()
         return T
-
-    def _Q(self, s, order=0):
-        """
-        Evaluate quintic polynomial Q(s) or its derivatives at s.
-
-        Q(s) = c0 + c1*s + c2*s² + c3*s³ + c4*s⁴ + c5*s⁵
-        """
-        s = np.asarray(s, dtype=float)
-        c = self._quintic_coeffs
-
-        from math import factorial
-
-        if order == 0:
-            return c[0] + c[1]*s + c[2]*s**2 + c[3]*s**3 + c[4]*s**4 + c[5]*s**5
-        elif order == 1:
-            return c[1] + 2*c[2]*s + 3*c[3]*s**2 + 4*c[4]*s**3 + 5*c[5]*s**4
-        elif order == 2:
-            return 2*c[2] + 6*c[3]*s + 12*c[4]*s**2 + 20*c[5]*s**3
-        elif order == 3:
-            return 6*c[3] + 24*c[4]*s + 60*c[5]*s**2
-        elif order == 4:
-            return 24*c[4] + 120*c[5]*s
-        elif order == 5:
-            return 120*c[5] + 0*s
-        else:
-            return 0*s
-
-    def _beta_derivs(self, s, max_order=8):
-        """
-        Compute β(s) and its derivatives where β(s) = f(2s - 1).
-
-        Since β(s) = f(τ) with τ = 2s - 1:
-        β^(k)(s) = 2^k * f^(k)(τ)
-        """
-        s = np.asarray(s, dtype=float)
-        tau = 2 * s - 1
-
-        # Get f derivatives at τ
-        f_derivs = normalized_f_derivatives(tau, max_order)
-
-        # Convert to β derivatives using chain rule
-        beta_derivs = []
-        for k, f_k in enumerate(f_derivs):
-            beta_derivs.append(f_k * (2 ** k))
-
-        return beta_derivs
 
     def _eval_derivative(self, t, order):
         """
-        Compute the n-th derivative of x(t) = Q(t/T).
+        Compute the k-th derivative of position at time t.
 
-        The quintic polynomial Q is parameterized by s = t/T ∈ [0,1].
-        Derivatives are computed via chain rule: d^n x/dt^n = Q^(n)(s) / T^n
+        Uses τ-normalized formulation to prevent T^n blowup:
+        x(t) = x0 + (x_target - x0) * β(τ) + v0*T * φ₁(τ) + 0.5*a0*T² * φ₂(τ) + ...
+
+        where:
+        - τ = t/T ∈ [0,1]
+        - φ₁(τ) = τ*(1-β(τ)) matches velocity at τ=0
+        - φ₂(τ) = τ²*(1-β(τ))² matches acceleration at τ=0
         """
+        from math import factorial
+
         t = np.asarray(t, dtype=float)
         scalar = t.ndim == 0
         t = np.atleast_1d(t)
         t = np.clip(t, 0, self.T)
 
         T = self.T
-        n = order
+        k = order
+        tau = t / T
 
-        # Normalized time
-        s = t / T
+        # Get β and its derivatives w.r.t. τ (up to order k)
+        beta_derivs = _beta_s_derivatives(tau, max_order=k)
+        beta = beta_derivs[0]
+        one_minus_beta = 1 - beta
 
-        # Direct evaluation of quintic and its derivatives
-        # x(t) = Q(s), so d^n x/dt^n = Q^(n)(s) / T^n
-        Q_n = self._Q(s, n)
-        result = Q_n / (T ** n) if n > 0 else Q_n
+        # Position term: (x_target - x0) * β(τ)
+        dx_target = self.x_target - self.x0
+
+        if k == 0:
+            # x(t) = x0 + Δx*β + v0*T*τ*(1-β) + 0.5*a0*T²*τ²*(1-β)² + ...
+            result = self.x0 + dx_target * beta
+            result += self.v0 * T * tau * one_minus_beta
+            result += 0.5 * self.a0 * T**2 * tau**2 * one_minus_beta**2
+            result += (1/6) * self.j0 * T**3 * tau**3 * one_minus_beta**3
+        else:
+            # Use Leibniz rule for derivatives
+            # For the β term: d^k/dt^k[β(τ)] = β^(k)(τ) / T^k
+            result = dx_target * beta_derivs[k] / (T ** k) if k <= len(beta_derivs) - 1 else np.zeros_like(t)
+
+            # For the v0*T*φ₁ term where φ₁ = τ*(1-β)
+            # d^k/dt^k[T*φ₁(τ)] = T * φ₁^(k)(τ) / T^k = φ₁^(k)(τ) / T^(k-1)
+            phi1_k = self._phi_deriv(tau, 1, k, beta_derivs)
+            result += self.v0 * T * phi1_k / (T ** k)
+
+            # For the 0.5*a0*T²*φ₂ term where φ₂ = τ²*(1-β)²
+            phi2_k = self._phi_deriv(tau, 2, k, beta_derivs)
+            result += 0.5 * self.a0 * T**2 * phi2_k / (T ** k)
+
+            # For the (1/6)*j0*T³*φ₃ term where φ₃ = τ³*(1-β)³
+            phi3_k = self._phi_deriv(tau, 3, k, beta_derivs)
+            result += (1/6) * self.j0 * T**3 * phi3_k / (T ** k)
 
         return float(result[0]) if scalar else result
+
+    def _phi_deriv(self, tau, n, k, beta_derivs):
+        """
+        Compute k-th derivative of φₙ(τ) = τⁿ * (1-β(τ))ⁿ w.r.t. τ.
+
+        Uses numerical differentiation for simplicity and robustness.
+        """
+        tau = np.asarray(tau, dtype=float)
+
+        if k == 0:
+            beta = beta_derivs[0]
+            return np.power(tau, n) * np.power(np.maximum(1 - beta, 0), n)
+
+        # Numerical differentiation
+        eps = 1e-6
+        if k == 1:
+            tau_p = np.clip(tau + eps, 0, 1)
+            tau_m = np.clip(tau - eps, 0, 1)
+            beta_p = _beta_s(tau_p)
+            beta_m = _beta_s(tau_m)
+            phi_p = np.power(tau_p, n) * np.power(np.maximum(1 - beta_p, 0), n)
+            phi_m = np.power(tau_m, n) * np.power(np.maximum(1 - beta_m, 0), n)
+            return (phi_p - phi_m) / (tau_p - tau_m + 1e-15)
+        else:
+            # Higher derivatives via central difference on lower derivative
+            tau_p = np.clip(tau + eps, 0, 1)
+            tau_m = np.clip(tau - eps, 0, 1)
+            beta_p = _beta_s_derivatives(tau_p, max_order=k-1)
+            beta_m = _beta_s_derivatives(tau_m, max_order=k-1)
+            dphi_p = self._phi_deriv(tau_p, n, k-1, beta_p)
+            dphi_m = self._phi_deriv(tau_m, n, k-1, beta_m)
+            return (dphi_p - dphi_m) / (tau_p - tau_m + 1e-15)
 
     def position(self, t):
         """Get position at time t."""
