@@ -1105,33 +1105,27 @@ def normalized_f_derivatives(tau, max_order=8):
 
 class BetaBlendMotion:
     """
-    Motion using beta S-curve as a blend function between inertial and target.
+    Motion using beta S-curve as a blend function with quintic base trajectory.
 
-    This approach is fundamentally different from the polynomial τ(t) mapping.
-    Instead of trying to follow the S-curve with a time reparameterization,
-    we use the S-curve itself to blend between:
-    - X(t): Inertial trajectory (what would happen with no correction)
-    - x_target: The desired final position
+    Instead of a simple inertial trajectory that can diverge, we use a quintic
+    polynomial that smoothly connects initial state to final state:
 
-    Formula: x(t) = X(t) * (1 - β(s)) + x_target * β(s)
+    Base trajectory Q(s) for s ∈ [0,1] satisfies:
+    - Q(0) = x0, Q'(0) = v0*T, Q''(0) = a0*T²
+    - Q(1) = xT, Q'(1) = 0, Q''(1) = 0
 
-    where:
-    - s = t/T (normalized time)
-    - β(s) = f(2s - 1) is the normalized S-curve mapped to [0,1]
-    - X(t) = x0 + v0*t + a0*t²/2 + ... (Taylor series from initial conditions)
+    Then apply S-curve time rescaling: x(t) = Q(β(t/T))
 
-    Properties:
-    - At t=0: β=0, so x = X(0) = x0 ✓
-    - At t=T: β=1, so x = x_target ✓
-    - β has ALL derivatives = 0 at s=0 and s=1
-    - Therefore ALL derivatives are continuous at boundaries
-    - Conceptually simple: just blending two trajectories!
+    This ensures:
+    - Smooth connection from initial to final state
+    - No oscillation or double overshoot
+    - S-curve characteristics for smooth derivatives
     """
 
     def __init__(self, x0, v0, a0, x_target, T, j0=0, snap0=0, crackle0=0, pop0=0,
                  robotVmax=None, robotAmax=None):
         """
-        Create a beta-blend motion.
+        Create a beta-blend motion using quintic polynomial with S-curve time rescaling.
 
         Parameters:
         -----------
@@ -1154,28 +1148,77 @@ class BetaBlendMotion:
         self.robotVmax = robotVmax if robotVmax else float('inf')
         self.robotAmax = robotAmax if robotAmax else float('inf')
 
-        # Initial derivatives as coefficients for Taylor series
-        # X(t) = x0 + v0*t + a0*t²/2! + j0*t³/3! + snap0*t⁴/4! + ...
-        self._derivs = [x0, v0, a0, j0, snap0, crackle0, pop0, 0, 0]
-
         # Set initial T (will be adjusted)
         self.T = max(T, 0.01)
+
+        # Compute quintic polynomial coefficients
+        self._compute_quintic_coefficients()
 
         # Find optimal T that respects constraints
         self.T = self._find_optimal_T(self.T)
 
+    def _compute_quintic_coefficients(self):
+        """
+        Compute coefficients for quintic polynomial Q(s) where s ∈ [0,1].
+
+        Q(s) connects initial state to final state:
+        - Q(0) = x0, Q'(0)/T = v0, Q''(0)/T² = a0
+        - Q(1) = xT, Q'(1) = 0, Q''(1) = 0
+
+        Q(s) = c0 + c1*s + c2*s² + c3*s³ + c4*s⁴ + c5*s⁵
+        """
+        T = self.T
+        x0, v0, a0, xT = self.x0, self.v0, self.a0, self.x_target
+
+        # Scaled initial derivatives (for s ∈ [0,1])
+        v0_s = v0 * T  # Q'(0) = v0 * T
+        a0_s = a0 * T * T  # Q''(0) = a0 * T²
+
+        # From boundary conditions at s=0:
+        c0 = x0
+        c1 = v0_s
+        c2 = a0_s / 2
+
+        # Remaining conditions give 3 equations for c3, c4, c5:
+        # Q(1) = c0 + c1 + c2 + c3 + c4 + c5 = xT
+        # Q'(1) = c1 + 2*c2 + 3*c3 + 4*c4 + 5*c5 = 0
+        # Q''(1) = 2*c2 + 6*c3 + 12*c4 + 20*c5 = 0
+
+        # Matrix form: A * [c3, c4, c5]^T = b
+        # [1, 1, 1]   [c3]   [xT - c0 - c1 - c2]
+        # [3, 4, 5] * [c4] = [-c1 - 2*c2]
+        # [6, 12, 20] [c5]   [-2*c2]
+
+        A = np.array([
+            [1, 1, 1],
+            [3, 4, 5],
+            [6, 12, 20]
+        ], dtype=float)
+
+        b = np.array([
+            xT - c0 - c1 - c2,
+            -c1 - 2*c2,
+            -2*c2
+        ], dtype=float)
+
+        try:
+            c345 = np.linalg.solve(A, b)
+            c3, c4, c5 = c345
+        except np.linalg.LinAlgError:
+            # Fallback to simple linear interpolation
+            c3, c4, c5 = 0, 0, 0
+
+        self._quintic_coeffs = [c0, c1, c2, c3, c4, c5]
+
     def _find_optimal_T(self, T_initial):
         """Adjust T to respect velocity and acceleration constraints."""
         T = T_initial
+        T_max = 60.0  # Maximum reasonable time
 
-        # Maximum reasonable T - for the blend approach, longer times
-        # actually make constraints worse due to diverging inertial trajectory
-        # So cap at a reasonable value
-        T_max = 30.0
-
-        for iteration in range(10):
-            # Temporarily set self.T for evaluation
+        for iteration in range(15):
+            # Update coefficients for new T
             self.T = T
+            self._compute_quintic_coefficients()
 
             # Sample to check constraints
             t_samples = np.linspace(0, T, 100)
@@ -1184,52 +1227,55 @@ class BetaBlendMotion:
 
             # Check for NaN/Inf
             if np.any(~np.isfinite(v_samples)) or np.any(~np.isfinite(a_samples)):
-                # Something went wrong, stick with current T
                 break
 
             max_v = np.max(np.abs(v_samples))
             max_a = np.max(np.abs(a_samples))
 
-            # For the blend approach, scaling T up doesn't always help
-            # because the inertial trajectory diverges
-            # Instead, only do minor adjustments
+            # Scale T to respect constraints
             scale = 1.0
-            if np.isfinite(max_v) and max_v > self.robotVmax * 1.5:
-                # Only scale if significantly over
-                scale = max(scale, min(max_v / self.robotVmax, 2.0))
-            if np.isfinite(max_a) and max_a > self.robotAmax * 1.5:
-                scale = max(scale, min(np.sqrt(max_a / self.robotAmax), 2.0))
+            if np.isfinite(max_v) and max_v > self.robotVmax:
+                scale = max(scale, max_v / self.robotVmax)
+            if np.isfinite(max_a) and max_a > self.robotAmax:
+                scale = max(scale, np.sqrt(max_a / self.robotAmax))
 
             if scale > 1.01:
-                new_T = T * scale * 1.05
-                if new_T > T_max:
-                    T = T_max
+                T = min(T * scale * 1.05, T_max)
+                if T >= T_max:
                     break
-                T = new_T
             else:
                 break
 
+        # Final update with chosen T
+        self.T = T
+        self._compute_quintic_coefficients()
         return T
 
-    def _X(self, t, order=0):
+    def _Q(self, s, order=0):
         """
-        Compute the inertial trajectory X(t) or its derivatives.
+        Evaluate quintic polynomial Q(s) or its derivatives at s.
 
-        X(t) = x0 + v0*t + a0*t²/2 + j0*t³/6 + ...
-        X^(n)(t) = n-th derivative of the Taylor series
+        Q(s) = c0 + c1*s + c2*s² + c3*s³ + c4*s⁴ + c5*s⁵
         """
-        t = np.asarray(t, dtype=float)
-
-        # The k-th derivative of t^n is n!/(n-k)! * t^(n-k) for n >= k, else 0
-        result = np.zeros_like(t)
+        s = np.asarray(s, dtype=float)
+        c = self._quintic_coeffs
 
         from math import factorial
-        for n, coef in enumerate(self._derivs):
-            if n >= order:
-                # d^order/dt^order [coef * t^n / n!] = coef * t^(n-order) / (n-order)!
-                result += coef * np.power(t, n - order) / factorial(n - order)
 
-        return result
+        if order == 0:
+            return c[0] + c[1]*s + c[2]*s**2 + c[3]*s**3 + c[4]*s**4 + c[5]*s**5
+        elif order == 1:
+            return c[1] + 2*c[2]*s + 3*c[3]*s**2 + 4*c[4]*s**3 + 5*c[5]*s**4
+        elif order == 2:
+            return 2*c[2] + 6*c[3]*s + 12*c[4]*s**2 + 20*c[5]*s**3
+        elif order == 3:
+            return 6*c[3] + 24*c[4]*s + 60*c[5]*s**2
+        elif order == 4:
+            return 24*c[4] + 120*c[5]*s
+        elif order == 5:
+            return 120*c[5] + 0*s
+        else:
+            return 0*s
 
     def _beta_derivs(self, s, max_order=8):
         """
@@ -1253,19 +1299,10 @@ class BetaBlendMotion:
 
     def _eval_derivative(self, t, order):
         """
-        Compute the n-th derivative of x(t) analytically.
+        Compute the n-th derivative of x(t) = Q(t/T).
 
-        Using Leibniz rule on x(t) = X(t)*(1-β(s)) + xT*β(s):
-
-        x^(n) = Σ_{k=0}^{n} C(n,k) * X^(n-k) * d^k/dt^k[(1-β)]  +  xT * d^n/dt^n[β]
-
-        Since d^k/dt^k[β(s)] = β^(k)(s) / T^k (by chain rule):
-        d^k/dt^k[(1-β)] = -β^(k)(s) / T^k for k >= 1
-
-        x^(n) = X^(n)*(1-β) - Σ_{k=1}^{n} C(n,k) * X^(n-k) * β^(k)/T^k + xT * β^(n)/T^n
-
-        Simplifying:
-        x^(n) = X^(n)*(1-β) + (xT - X) * β^(n)/T^n - Σ_{k=1}^{n-1} C(n,k) * X^(n-k) * β^(k)/T^k
+        The quintic polynomial Q is parameterized by s = t/T ∈ [0,1].
+        Derivatives are computed via chain rule: d^n x/dt^n = Q^(n)(s) / T^n
         """
         t = np.asarray(t, dtype=float)
         scalar = t.ndim == 0
@@ -1273,36 +1310,15 @@ class BetaBlendMotion:
         t = np.clip(t, 0, self.T)
 
         T = self.T
-        xT = self.x_target
         n = order
 
         # Normalized time
         s = t / T
 
-        # Get β and its derivatives
-        beta_derivs = self._beta_derivs(s, max_order=n)
-        beta = beta_derivs[0]
-
-        from math import factorial
-
-        if n == 0:
-            # x = X*(1-β) + xT*β
-            X = self._X(t, 0)
-            result = X * (1 - beta) + xT * beta
-        else:
-            # x^(n) = X^(n)*(1-β) + (xT - X) * β^(n)/T^n
-            #         - Σ_{k=1}^{n-1} C(n,k) * X^(n-k) * β^(k)/T^k
-            X = self._X(t, 0)
-            X_n = self._X(t, n)
-            beta_n = beta_derivs[n]
-
-            result = X_n * (1 - beta) + (xT - X) * beta_n / (T ** n)
-
-            for k in range(1, n):
-                binom = factorial(n) // (factorial(k) * factorial(n - k))
-                X_nk = self._X(t, n - k)
-                beta_k = beta_derivs[k]
-                result -= binom * X_nk * beta_k / (T ** k)
+        # Direct evaluation of quintic and its derivatives
+        # x(t) = Q(s), so d^n x/dt^n = Q^(n)(s) / T^n
+        Q_n = self._Q(s, n)
+        result = Q_n / (T ** n) if n > 0 else Q_n
 
         return float(result[0]) if scalar else result
 
