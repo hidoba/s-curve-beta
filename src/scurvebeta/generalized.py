@@ -516,7 +516,9 @@ class SmoothMotion:
             return float(result[0]) if scalar else result
 
         tau, _, _, _ = _eval_tau_poly(np.clip(t, 0, self.T), self.coeffs)
-        tau = np.clip(tau, min(self.tau_start, self.tau_end), max(self.tau_start, self.tau_end))
+        # Allow τ to go outside [tau_start, tau_end] for overshoot during direction reversal
+        # Only clip to the valid S-curve range [-1, 1]
+        tau = np.clip(tau, -1, 1)
 
         f_vals = normalized_f(tau)
         f_start = normalized_f(self.tau_start)

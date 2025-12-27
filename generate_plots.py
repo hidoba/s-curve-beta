@@ -335,6 +335,8 @@ def plot_motion_continuation():
 
     t2 = np.linspace(0, T2, 301)
     pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
+    # Use analytical jerk from smooth motion
+    jerk2 = plan2['smooth_motion'].jerk(t2)
 
     print(f"\nMotion 2 (smooth continuation): {plan2['x0']:.2f} -> {plan2['x1']:.2f}")
     print(f"  Duration: {T2:.3f}s")
@@ -354,9 +356,10 @@ def plot_motion_continuation():
     vel_combined = np.concatenate([vel1, vel2[1:]])
     acc_combined = np.concatenate([acc1, acc2[1:]])
 
-    # Compute jerk for visualization
-    dt = t_combined[1] - t_combined[0]
-    jerk_combined = np.gradient(acc_combined, dt)
+    # Compute jerk: numerical for motion 1, analytical for motion 2
+    dt1 = t1[1] - t1[0]
+    jerk1 = np.gradient(acc1, dt1)
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
 
     # Plot position
     axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
@@ -445,6 +448,7 @@ def plot_direction_reversal():
 
     pos1, vel1, acc1 = evaluate_motion(plan1, t1)
     pos2, vel2, acc2 = evaluate_smooth_motion(plan2, t2)
+    jerk2 = plan2['smooth_motion'].jerk(t2)
 
     # Combined
     t_combined = np.concatenate([t1, T1 + t2[1:]])
@@ -452,8 +456,10 @@ def plot_direction_reversal():
     vel_combined = np.concatenate([vel1, vel2[1:]])
     acc_combined = np.concatenate([acc1, acc2[1:]])
 
-    dt = t_combined[1] - t_combined[0]
-    jerk_combined = np.gradient(acc_combined, dt)
+    # Jerk: numerical for motion 1, analytical for motion 2
+    dt1 = t1[1] - t1[0]
+    jerk1 = np.gradient(acc1, dt1)
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
 
     # Plot position
     axs[0].plot(t_combined, pos_combined, 'b-', linewidth=2)
