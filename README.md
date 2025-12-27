@@ -363,6 +363,156 @@ motionRange\cdot f \left(\frac{2 t}{motionTime}-1,2.5 \right)$$
 
 ![](https://github.com/hidoba/s-curve-beta/raw/main/img/plot5.png)
 
+# Generalized Motion States (Custom Boundary Conditions)
+
+The original S-curve implementation assumes motion starts and ends at rest (zero velocity and acceleration). The **generalized motion module** extends this to support arbitrary initial and final states (position, velocity, acceleration).
+
+## Key Insight
+
+The S-curve already contains **all possible motion states** along its path. Instead of creating new curves, we simply select the segment of the existing curve that matches our desired boundary conditions:
+
+- **τ = -1**: Rest state (v=0, a=0) at start of curve
+- **τ = 0**: Maximum velocity, zero acceleration (midpoint)
+- **τ = +1**: Rest state (v=0, a=0) at end of curve
+
+For any intermediate τ value, we get a unique (position, velocity, acceleration) state. The velocity and acceleration are coupled by the curve shape.
+
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/curve_segment_visualization.png)
+
+## Installation
+
+The generalized module requires `scipy` in addition to `numpy`:
+
+```bash
+pip install scipy
+```
+
+## Basic Usage
+
+```python
+from scurvebeta.generalized import plan_motion, evaluate_motion
+import numpy as np
+
+# Plan a motion from position 0 to 10
+# Starting with velocity 3, ending at rest
+plan = plan_motion(
+    x0=0, x1=10,           # Start and end positions
+    v0=3, v1=0,            # Start and end velocities
+    robotVmax=8,           # Maximum velocity constraint
+    robotAmax=4            # Maximum acceleration constraint
+)
+
+print(f"Motion time: {plan['T']:.3f} seconds")
+print(f"Actual start velocity: {plan['v0_actual']:.3f}")
+print(f"Actual end velocity: {plan['v1_actual']:.3f}")
+
+# Evaluate position, velocity, acceleration at any time
+t = np.linspace(0, plan['T'], 100)
+position, velocity, acceleration = evaluate_motion(plan, t)
+```
+
+## Motion Continuation (Chaining Motions)
+
+One powerful use case is smoothly chaining multiple motions. The end state of one motion becomes the start state of the next:
+
+```python
+from scurvebeta.generalized import plan_motion, evaluate_motion
+
+robotVmax, robotAmax = 6, 3
+
+# First motion: 0 → 10, start at rest, end moving
+plan1 = plan_motion(0, 10, v0=0, v1=2, robotVmax=robotVmax, robotAmax=robotAmax)
+
+# Get the actual end state
+v_end = plan1['v1_actual']
+a_end = plan1['a1_actual']
+
+# Second motion: 10 → 15, continue from previous state, end at rest
+plan2 = plan_motion(10, 15, v0=v_end, v1=0, a0=a_end, robotVmax=robotVmax, robotAmax=robotAmax)
+
+# The velocity is continuous at the transition!
+print(f"Motion 1 end velocity: {plan1['v1_actual']:.4f}")
+print(f"Motion 2 start velocity: {plan2['v0_actual']:.4f}")
+# Output: Both are 2.0000 - perfect continuity!
+```
+
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/motion_continuation.png)
+
+## Comparison: Rest-to-Rest vs Custom Boundaries
+
+The generalized module produces identical results to the original for rest-to-rest motion:
+
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/rest_to_rest_comparison.png)
+
+But it can also handle cases where motion starts or ends while moving:
+
+![](https://github.com/hidoba/s-curve-beta/raw/main/img/custom_boundary_conditions.png)
+
+## API Reference
+
+### `plan_motion(x0, x1, v0=0, v1=0, a0=0, a1=0, robotVmax=None, robotAmax=None)`
+
+Plan a motion from state (x0, v0, a0) to state (x1, v1, a1).
+
+**Parameters:**
+- `x0, x1`: Start and end positions
+- `v0, v1`: Start and end velocities (default 0 for rest)
+- `a0, a1`: Start and end accelerations (default 0)
+- `robotVmax`: Maximum velocity constraint (optional)
+- `robotAmax`: Maximum acceleration constraint (optional)
+
+**Returns:** Dictionary with:
+- `T`: Motion duration
+- `tau_start`, `tau_end`: Segment endpoints on normalized curve
+- `v0_actual`, `v1_actual`: Actual boundary velocities achieved
+- `a0_actual`, `a1_actual`: Actual boundary accelerations achieved
+
+### `evaluate_motion(plan, t)`
+
+Evaluate the motion at time(s) t.
+
+**Returns:** `(position, velocity, acceleration)` tuple
+
+### Lower-level Functions
+
+```python
+from scurvebeta.generalized import (
+    generalized_motion_time,  # Calculate T, tau_start, tau_end
+    generalized_sCurve,       # Get position at time t
+    get_velocity,             # Get velocity at time t
+    get_acceleration,         # Get acceleration at time t
+    normalized_f,             # Normalized position function f(τ)
+    normalized_f_derivative,  # Velocity profile f'(τ)
+    normalized_f_second_derivative,  # Acceleration profile f''(τ)
+)
+```
+
+## Mathematical Foundation
+
+The normalized S-curve f(τ) for τ ∈ [-1, 1] has these properties:
+
+- **Position**: f(τ) ranges from 0 to 1
+- **Velocity**: f'(τ) = (1 - τ²)^2.5 / B(0.5, 3.5), max ≈ 1.019 at τ=0
+- **Acceleration**: f''(τ) = -5τ(1 - τ²)^1.5 / B(0.5, 3.5), max ≈ 1.654 at τ=-0.5
+
+When using segment [τ_start, τ_end] mapped to time [0, T] and position [x0, x1]:
+
+$$position(t) = x_0 + (x_1 - x_0) \cdot \frac{f(\tau(t)) - f(\tau_{start})}{f(\tau_{end}) - f(\tau_{start})}$$
+
+$$velocity(t) = \frac{(x_1 - x_0) \cdot \Delta\tau}{\Delta f \cdot T} \cdot f'(\tau(t))$$
+
+$$acceleration(t) = \frac{(x_1 - x_0) \cdot \Delta\tau^2}{\Delta f \cdot T^2} \cdot f''(\tau(t))$$
+
+where Δτ = τ_end - τ_start and Δf = f(τ_end) - f(τ_start).
+
+## Limitations
+
+1. **Coupled velocity and acceleration**: At any point on the curve, velocity and acceleration are linked. You cannot specify arbitrary (v, a) pairs independently.
+
+2. **Velocity direction**: The start/end velocity should be in the same direction as the motion (from x0 to x1). Opposite-direction velocities are not fully supported.
+
+3. **Numerical search**: For custom boundary conditions, the algorithm uses numerical search to find the optimal curve segment, which may be slower than the closed-form rest-to-rest solution.
+
 ## License
 
 Copyright (c) 2022 Vladimir Grankovsky at Hidoba Research. This work is licensed under an Apache 2.0 license.
