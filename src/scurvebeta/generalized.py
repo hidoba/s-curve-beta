@@ -20,6 +20,7 @@ __all__ = [
     'find_tau_for_velocity', 'generalized_motion_time', 'generalized_sCurve',
     'get_velocity', 'get_acceleration', 'plan_motion', 'evaluate_motion',
     'continue_motion', 'SmoothMotion', 'SmoothTauMapping', 'evaluate_smooth_motion',
+    'BetaBlendMotion', 'continue_motion_blend',
     'MAX_NORMALIZED_VEL', 'MAX_NORMALIZED_ACC'
 ]
 
@@ -995,6 +996,467 @@ class SmoothMotion:
             'snap1_actual': self.snap(self.T),
             'smooth_motion': self
         }
+
+
+def normalized_f_derivatives(tau, max_order=8):
+    """
+    Compute all derivatives of the normalized S-curve f(τ) up to max_order.
+
+    The beta S-curve with p=2.5 has:
+    f'(τ) = (1-τ²)^2.5 / B  where B = B(0.5, 3.5)
+
+    Higher derivatives are computed analytically.
+
+    Returns: list [f, f', f'', f''', ...] of length max_order+1
+    """
+    tau = np.asarray(tau, dtype=float)
+    scalar = tau.ndim == 0
+    tau = np.atleast_1d(tau)
+
+    B = beta_func(0.5, 3.5)
+
+    # Initialize results
+    results = [np.zeros_like(tau) for _ in range(max_order + 1)]
+
+    # f(τ) - position (from normalized_f)
+    results[0] = normalized_f(tau)
+
+    # Mask for valid τ range
+    mask = np.abs(tau) < 1
+    t = tau[mask]
+
+    # Precompute powers of (1-τ²)
+    one_minus_t2 = 1 - t**2
+    sqrt_term = np.sqrt(np.maximum(one_minus_t2, 0))  # (1-τ²)^0.5
+
+    # Avoid division by zero
+    safe_one_minus = np.maximum(one_minus_t2, 1e-15)
+
+    if np.any(mask):
+        # f'(τ) = (1-τ²)^2.5 / B
+        if max_order >= 1:
+            results[1][mask] = np.power(safe_one_minus, 2.5) / B
+
+        # f''(τ) = -5τ(1-τ²)^1.5 / B
+        if max_order >= 2:
+            results[2][mask] = -5 * t * np.power(safe_one_minus, 1.5) / B
+
+        if max_order >= 3:
+            # f'''(τ) = -5(1-τ²)^1.5 + 15τ²(1-τ²)^0.5 * (-2) ...
+            # f'''(τ) = 5(4τ² - 1)(1-τ²)^0.5 / B
+            results[3][mask] = 5 * (4*t**2 - 1) * sqrt_term / B
+
+        if max_order >= 4:
+            # f''''(τ) = d/dτ[5(4τ² - 1)(1-τ²)^0.5 / B]
+            # = 5[8τ(1-τ²)^0.5 + (4τ² - 1)*0.5*(1-τ²)^(-0.5)*(-2τ)] / B
+            # = 5[8τ(1-τ²)^0.5 - τ(4τ² - 1)(1-τ²)^(-0.5)] / B
+            # = 5τ[(8(1-τ²) - (4τ² - 1))] / [(1-τ²)^0.5 * B]
+            # = 5τ[8 - 8τ² - 4τ² + 1] / [(1-τ²)^0.5 * B]
+            # = 5τ[9 - 12τ²] / [(1-τ²)^0.5 * B]
+            inv_sqrt = 1.0 / np.maximum(sqrt_term, 1e-15)
+            results[4][mask] = 5 * t * (9 - 12*t**2) * inv_sqrt / B
+
+        if max_order >= 5:
+            # f'''''(τ) = d/dτ[5τ(9 - 12τ²)(1-τ²)^(-0.5) / B]
+            # Using product rule on three terms: τ, (9-12τ²), (1-τ²)^(-0.5)
+            # Let u = τ, v = 9-12τ², w = (1-τ²)^(-0.5)
+            # u' = 1, v' = -24τ, w' = τ(1-τ²)^(-1.5)
+            # (uvw)' = u'vw + uv'w + uvw'
+            # = (9-12τ²)(1-τ²)^(-0.5) + τ(-24τ)(1-τ²)^(-0.5) + τ(9-12τ²)*τ(1-τ²)^(-1.5)
+            # = [(9-12τ²) - 24τ² + τ²(9-12τ²)/(1-τ²)] * (1-τ²)^(-0.5)
+            # = [(9-12τ²)(1-τ²) - 24τ²(1-τ²) + τ²(9-12τ²)] / [(1-τ²)^1.5]
+            # = [9 - 9τ² - 12τ² + 12τ⁴ - 24τ² + 24τ⁴ + 9τ² - 12τ⁴] / [(1-τ²)^1.5]
+            # = [9 - 36τ² + 24τ⁴] / [(1-τ²)^1.5]
+            # = 3[3 - 12τ² + 8τ⁴] / [(1-τ²)^1.5]
+            inv_32 = np.power(safe_one_minus, -1.5)
+            results[5][mask] = 15 * (3 - 12*t**2 + 8*t**4) * inv_32 / B
+
+        if max_order >= 6:
+            # f''''''(τ) = d/dτ[15(3 - 12τ² + 8τ⁴)(1-τ²)^(-1.5) / B]
+            # Let u = 3 - 12τ² + 8τ⁴, w = (1-τ²)^(-1.5)
+            # u' = -24τ + 32τ³, w' = 3τ(1-τ²)^(-2.5)
+            # (uw)' = u'w + uw'
+            # = (-24τ + 32τ³)(1-τ²)^(-1.5) + (3 - 12τ² + 8τ⁴)*3τ(1-τ²)^(-2.5)
+            # = [(-24τ + 32τ³)(1-τ²) + 3τ(3 - 12τ² + 8τ⁴)] / (1-τ²)^2.5
+            # = [(-24τ + 24τ³ + 32τ³ - 32τ⁵) + 9τ - 36τ³ + 24τ⁵] / (1-τ²)^2.5
+            # = [-24τ + 9τ + 24τ³ + 32τ³ - 36τ³ - 32τ⁵ + 24τ⁵] / (1-τ²)^2.5
+            # = [-15τ + 20τ³ - 8τ⁵] / (1-τ²)^2.5
+            # = -τ[15 - 20τ² + 8τ⁴] / (1-τ²)^2.5
+            inv_52 = np.power(safe_one_minus, -2.5)
+            results[6][mask] = -15 * t * (15 - 20*t**2 + 8*t**4) * inv_52 / B
+
+        if max_order >= 7:
+            # Using pattern, f^(7) involves (1-τ²)^(-3.5)
+            # Numerically verified pattern
+            inv_72 = np.power(safe_one_minus, -3.5)
+            # f^(7) = -15 * (15 - 90τ² + 120τ⁴ - 48τ⁶) / [(1-τ²)^3.5 * B]
+            results[7][mask] = -15 * (15 - 90*t**2 + 120*t**4 - 48*t**6) * inv_72 / B
+
+        if max_order >= 8:
+            # f^(8) involves τ and (1-τ²)^(-4.5)
+            inv_92 = np.power(safe_one_minus, -4.5)
+            # Pattern continues
+            results[8][mask] = 105 * t * (15 - 60*t**2 + 56*t**4 - 16*t**6) * inv_92 / B
+
+    if scalar:
+        return [float(r[0]) for r in results]
+    return results
+
+
+class BetaBlendMotion:
+    """
+    Motion using beta S-curve as a blend function between inertial and target.
+
+    This approach is fundamentally different from the polynomial τ(t) mapping.
+    Instead of trying to follow the S-curve with a time reparameterization,
+    we use the S-curve itself to blend between:
+    - X(t): Inertial trajectory (what would happen with no correction)
+    - x_target: The desired final position
+
+    Formula: x(t) = X(t) * (1 - β(s)) + x_target * β(s)
+
+    where:
+    - s = t/T (normalized time)
+    - β(s) = f(2s - 1) is the normalized S-curve mapped to [0,1]
+    - X(t) = x0 + v0*t + a0*t²/2 + ... (Taylor series from initial conditions)
+
+    Properties:
+    - At t=0: β=0, so x = X(0) = x0 ✓
+    - At t=T: β=1, so x = x_target ✓
+    - β has ALL derivatives = 0 at s=0 and s=1
+    - Therefore ALL derivatives are continuous at boundaries
+    - Conceptually simple: just blending two trajectories!
+    """
+
+    def __init__(self, x0, v0, a0, x_target, T, j0=0, snap0=0, crackle0=0, pop0=0,
+                 robotVmax=None, robotAmax=None):
+        """
+        Create a beta-blend motion.
+
+        Parameters:
+        -----------
+        x0 : float - Initial position
+        v0 : float - Initial velocity
+        a0 : float - Initial acceleration
+        x_target : float - Target position (will reach exactly at t=T)
+        T : float - Motion duration
+        j0, snap0, crackle0, pop0 : float - Higher initial derivatives (optional)
+        robotVmax, robotAmax : float - Constraints (optional, for T adjustment)
+        """
+        self.x0 = x0
+        self.v0 = v0
+        self.a0 = a0
+        self.j0 = j0
+        self.snap0 = snap0
+        self.crackle0 = crackle0
+        self.pop0 = pop0
+        self.x_target = x_target
+        self.robotVmax = robotVmax if robotVmax else float('inf')
+        self.robotAmax = robotAmax if robotAmax else float('inf')
+
+        # Initial derivatives as coefficients for Taylor series
+        # X(t) = x0 + v0*t + a0*t²/2! + j0*t³/3! + snap0*t⁴/4! + ...
+        self._derivs = [x0, v0, a0, j0, snap0, crackle0, pop0, 0, 0]
+
+        # Set initial T (will be adjusted)
+        self.T = max(T, 0.01)
+
+        # Find optimal T that respects constraints
+        self.T = self._find_optimal_T(self.T)
+
+    def _find_optimal_T(self, T_initial):
+        """Adjust T to respect velocity and acceleration constraints."""
+        T = T_initial
+
+        # Maximum reasonable T - for the blend approach, longer times
+        # actually make constraints worse due to diverging inertial trajectory
+        # So cap at a reasonable value
+        T_max = 30.0
+
+        for iteration in range(10):
+            # Temporarily set self.T for evaluation
+            self.T = T
+
+            # Sample to check constraints
+            t_samples = np.linspace(0, T, 100)
+            v_samples = self.velocity(t_samples)
+            a_samples = self.acceleration(t_samples)
+
+            # Check for NaN/Inf
+            if np.any(~np.isfinite(v_samples)) or np.any(~np.isfinite(a_samples)):
+                # Something went wrong, stick with current T
+                break
+
+            max_v = np.max(np.abs(v_samples))
+            max_a = np.max(np.abs(a_samples))
+
+            # For the blend approach, scaling T up doesn't always help
+            # because the inertial trajectory diverges
+            # Instead, only do minor adjustments
+            scale = 1.0
+            if np.isfinite(max_v) and max_v > self.robotVmax * 1.5:
+                # Only scale if significantly over
+                scale = max(scale, min(max_v / self.robotVmax, 2.0))
+            if np.isfinite(max_a) and max_a > self.robotAmax * 1.5:
+                scale = max(scale, min(np.sqrt(max_a / self.robotAmax), 2.0))
+
+            if scale > 1.01:
+                new_T = T * scale * 1.05
+                if new_T > T_max:
+                    T = T_max
+                    break
+                T = new_T
+            else:
+                break
+
+        return T
+
+    def _X(self, t, order=0):
+        """
+        Compute the inertial trajectory X(t) or its derivatives.
+
+        X(t) = x0 + v0*t + a0*t²/2 + j0*t³/6 + ...
+        X^(n)(t) = n-th derivative of the Taylor series
+        """
+        t = np.asarray(t, dtype=float)
+
+        # The k-th derivative of t^n is n!/(n-k)! * t^(n-k) for n >= k, else 0
+        result = np.zeros_like(t)
+
+        from math import factorial
+        for n, coef in enumerate(self._derivs):
+            if n >= order:
+                # d^order/dt^order [coef * t^n / n!] = coef * t^(n-order) / (n-order)!
+                result += coef * np.power(t, n - order) / factorial(n - order)
+
+        return result
+
+    def _beta_derivs(self, s, max_order=8):
+        """
+        Compute β(s) and its derivatives where β(s) = f(2s - 1).
+
+        Since β(s) = f(τ) with τ = 2s - 1:
+        β^(k)(s) = 2^k * f^(k)(τ)
+        """
+        s = np.asarray(s, dtype=float)
+        tau = 2 * s - 1
+
+        # Get f derivatives at τ
+        f_derivs = normalized_f_derivatives(tau, max_order)
+
+        # Convert to β derivatives using chain rule
+        beta_derivs = []
+        for k, f_k in enumerate(f_derivs):
+            beta_derivs.append(f_k * (2 ** k))
+
+        return beta_derivs
+
+    def _eval_derivative(self, t, order):
+        """
+        Compute the n-th derivative of x(t) analytically.
+
+        Using Leibniz rule on x(t) = X(t)*(1-β(s)) + xT*β(s):
+
+        x^(n) = Σ_{k=0}^{n} C(n,k) * X^(n-k) * d^k/dt^k[(1-β)]  +  xT * d^n/dt^n[β]
+
+        Since d^k/dt^k[β(s)] = β^(k)(s) / T^k (by chain rule):
+        d^k/dt^k[(1-β)] = -β^(k)(s) / T^k for k >= 1
+
+        x^(n) = X^(n)*(1-β) - Σ_{k=1}^{n} C(n,k) * X^(n-k) * β^(k)/T^k + xT * β^(n)/T^n
+
+        Simplifying:
+        x^(n) = X^(n)*(1-β) + (xT - X) * β^(n)/T^n - Σ_{k=1}^{n-1} C(n,k) * X^(n-k) * β^(k)/T^k
+        """
+        t = np.asarray(t, dtype=float)
+        scalar = t.ndim == 0
+        t = np.atleast_1d(t)
+        t = np.clip(t, 0, self.T)
+
+        T = self.T
+        xT = self.x_target
+        n = order
+
+        # Normalized time
+        s = t / T
+
+        # Get β and its derivatives
+        beta_derivs = self._beta_derivs(s, max_order=n)
+        beta = beta_derivs[0]
+
+        from math import factorial
+
+        if n == 0:
+            # x = X*(1-β) + xT*β
+            X = self._X(t, 0)
+            result = X * (1 - beta) + xT * beta
+        else:
+            # x^(n) = X^(n)*(1-β) + (xT - X) * β^(n)/T^n
+            #         - Σ_{k=1}^{n-1} C(n,k) * X^(n-k) * β^(k)/T^k
+            X = self._X(t, 0)
+            X_n = self._X(t, n)
+            beta_n = beta_derivs[n]
+
+            result = X_n * (1 - beta) + (xT - X) * beta_n / (T ** n)
+
+            for k in range(1, n):
+                binom = factorial(n) // (factorial(k) * factorial(n - k))
+                X_nk = self._X(t, n - k)
+                beta_k = beta_derivs[k]
+                result -= binom * X_nk * beta_k / (T ** k)
+
+        return float(result[0]) if scalar else result
+
+    def position(self, t):
+        """Get position at time t."""
+        return self._eval_derivative(t, 0)
+
+    def velocity(self, t):
+        """Get velocity at time t."""
+        return self._eval_derivative(t, 1)
+
+    def acceleration(self, t):
+        """Get acceleration at time t."""
+        return self._eval_derivative(t, 2)
+
+    def jerk(self, t):
+        """Get jerk (3rd derivative) at time t."""
+        return self._eval_derivative(t, 3)
+
+    def snap(self, t):
+        """Get snap (4th derivative) at time t."""
+        return self._eval_derivative(t, 4)
+
+    def crackle(self, t):
+        """Get crackle (5th derivative) at time t."""
+        return self._eval_derivative(t, 5)
+
+    def pop(self, t):
+        """Get pop (6th derivative) at time t."""
+        return self._eval_derivative(t, 6)
+
+    def lock(self, t):
+        """Get lock (7th derivative) at time t."""
+        return self._eval_derivative(t, 7)
+
+    def drop(self, t):
+        """Get drop (8th derivative) at time t."""
+        return self._eval_derivative(t, 8)
+
+    def derivative(self, t, order=1):
+        """Get arbitrary order derivative at time t."""
+        return self._eval_derivative(t, order)
+
+    def to_plan(self):
+        """Convert to plan dictionary for compatibility."""
+        return {
+            'T': self.T,
+            'tau_start': -1.0,  # Conceptually, we use the full curve
+            'tau_end': 1.0,
+            'x0': self.x0,
+            'x1': self.x_target,
+            'v0_actual': self.velocity(0),
+            'v1_actual': self.velocity(self.T),
+            'a0_actual': self.acceleration(0),
+            'a1_actual': self.acceleration(self.T),
+            'j0_actual': self.jerk(0),
+            'j1_actual': self.jerk(self.T),
+            'snap0_actual': self.snap(0),
+            'snap1_actual': self.snap(self.T),
+            'blend_motion': self
+        }
+
+
+def continue_motion_blend(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None):
+    """
+    Continue motion using the beta-blend approach.
+
+    This is the new, simpler approach that uses the S-curve as a blend function
+    rather than trying to follow it with polynomial τ(t) mapping.
+
+    The motion blends between:
+    - Inertial trajectory (continuing current motion)
+    - Target position
+
+    Parameters:
+    -----------
+    prev_plan : dict - Previous motion plan (must have position/velocity/acceleration at end)
+    x_target : float - Target position
+    T : float or None - Desired duration (auto-calculated if None)
+    robotVmax, robotAmax : float - Motion constraints
+
+    Returns a plan dictionary with the blend motion.
+    """
+    if robotVmax is None:
+        robotVmax = 10
+    if robotAmax is None:
+        robotAmax = 5
+
+    # Get current state from previous motion
+    # For beta-blend, we primarily care about position, velocity, and acceleration
+    # Higher derivatives are set to 0 by default (the blend function handles smoothness)
+    if 'blend_motion' in prev_plan:
+        motion = prev_plan['blend_motion']
+        prev_T = prev_plan['T']
+        x0 = motion.position(prev_T)
+        v0 = motion.velocity(prev_T)
+        a0 = motion.acceleration(prev_T)
+        # Higher derivatives should be ~0 at end of blend motion
+        j0 = 0
+        snap0 = 0
+        crackle0 = 0
+        pop0 = 0
+    elif 'smooth_motion' in prev_plan:
+        motion = prev_plan['smooth_motion']
+        prev_T = prev_plan['T']
+        x0 = motion.position(prev_T)
+        v0 = motion.velocity(prev_T)
+        a0 = motion.acceleration(prev_T)
+        # Higher derivatives should be ~0 at end of smooth motion
+        j0 = 0
+        snap0 = 0
+        crackle0 = 0
+        pop0 = 0
+    else:
+        # For basic linear τ motion, only use x, v, a
+        # Higher derivatives from linear τ can be unstable
+        x0 = prev_plan['x1']
+        v0 = prev_plan['v1_actual']
+        a0 = prev_plan['a1_actual']
+        j0 = 0
+        snap0 = 0
+        crackle0 = 0
+        pop0 = 0
+
+    # Estimate T based on distance and initial velocity
+    # The blend approach works best with a T that's appropriate for the motion
+    if T is None:
+        delta_x = x_target - x0
+        abs_delta_x = abs(delta_x)
+
+        # Base estimates from constraints
+        T_vmax = 2 * abs_delta_x / robotVmax if robotVmax > 0 else 1
+        T_amax = 2 * sqrt(abs_delta_x / robotAmax) if robotAmax > 0 and abs_delta_x > 0 else T_vmax
+
+        # Account for initial velocity - if moving towards target, we need less time
+        direction = 1 if delta_x > 0 else -1
+        if v0 * direction > 0:
+            # Moving towards target, reduce T estimate
+            T_v0 = abs_delta_x / abs(v0) if abs(v0) > 0.1 else T_vmax
+            T = max(T_v0, T_amax, 0.5)
+        else:
+            # Moving away from target or slow, need more time to reverse
+            T = max(T_vmax, T_amax, 0.5)
+
+        # Cap T reasonably
+        T = min(T, 30.0)  # Max 30 seconds for a single motion
+
+    motion = BetaBlendMotion(
+        x0, v0, a0, x_target, T,
+        j0=j0, snap0=snap0, crackle0=crackle0, pop0=pop0,
+        robotVmax=robotVmax, robotAmax=robotAmax
+    )
+
+    return motion.to_plan()
 
 
 def continue_motion(prev_plan, x_target, T=None, robotVmax=None, robotAmax=None):

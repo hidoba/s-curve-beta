@@ -9,7 +9,8 @@ sys.path.insert(0, '/home/user/s-curve-beta/src')
 from scurvebeta.generalized import (
     normalized_f, normalized_f_derivative, normalized_f_second_derivative,
     generalized_motion_time, generalized_sCurve, get_velocity, get_acceleration,
-    plan_motion, evaluate_motion, MAX_NORMALIZED_VEL, MAX_NORMALIZED_ACC
+    plan_motion, evaluate_motion, MAX_NORMALIZED_VEL, MAX_NORMALIZED_ACC,
+    BetaBlendMotion, continue_motion_blend
 )
 import scurvebeta as scb
 
@@ -514,6 +515,262 @@ def plot_direction_reversal():
     plt.close()
 
 
+def plot_beta_blend_motion():
+    """Demonstrate the new beta-blend approach with clean analytical derivatives."""
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
+
+    robotVmax, robotAmax = 6, 3
+
+    # Start from a moving state (simulating mid-motion target change)
+    x0, v0, a0 = 10, 3, -1.5
+    x_target = 18
+    T = 5.0
+
+    motion = BetaBlendMotion(x0, v0, a0, x_target, T,
+                             robotVmax=robotVmax, robotAmax=robotAmax)
+    T = motion.T  # May be adjusted
+
+    print("=== Beta Blend Motion (New Approach) ===")
+    print(f"Initial: x={x0}, v={v0}, a={a0}")
+    print(f"Target: x={x_target}")
+    print(f"Duration: T={T:.3f}s")
+
+    t = np.linspace(0, T, 500)
+
+    # Compute all derivatives analytically
+    pos = motion.position(t)
+    vel = motion.velocity(t)
+    acc = motion.acceleration(t)
+    jerk = motion.jerk(t)
+    snap = motion.snap(t)
+    crackle = motion.crackle(t)
+    pop = motion.pop(t)
+    lock = motion.lock(t)
+    drop = motion.drop(t)
+
+    # Check boundary conditions
+    print(f"\nBoundary values at t=0:")
+    print(f"  x={motion.position(0):.6f} (expected {x0})")
+    print(f"  v={motion.velocity(0):.6f} (expected {v0})")
+    print(f"  a={motion.acceleration(0):.6f} (expected {a0})")
+
+    print(f"\nBoundary values at t=T:")
+    print(f"  x={motion.position(T):.6f} (expected {x_target})")
+    print(f"  v={motion.velocity(T):.10f} (expected ~0)")
+    print(f"  a={motion.acceleration(T):.10f} (expected ~0)")
+    print(f"  jerk={motion.jerk(T):.10f} (expected ~0)")
+
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos, vel, acc, jerk, snap, crackle, pop, lock, drop]
+
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t, d, color=color, linewidth=2)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
+
+        # Mark start/end
+        axs[i].scatter([0], [d[0]], color='green', s=60, zorder=5, label=f'Start: {d[0]:.2f}')
+        axs[i].scatter([T], [d[-1]], color='red', s=60, zorder=5, label=f'End: {d[-1]:.4f}')
+        axs[i].legend(loc='upper right', fontsize=8)
+
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+
+    plt.suptitle('Beta Blend Motion: Clean Analytical Derivatives!', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/beta_blend_analytical.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/beta_blend_analytical.png")
+    plt.close()
+
+
+def plot_beta_blend_continuation():
+    """Demonstrate motion continuation using the new beta-blend approach."""
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
+
+    robotVmax, robotAmax = 6, 3
+
+    # First motion: start from rest, end mid-motion
+    plan1 = plan_motion(0, 10, v0=0, v1=2, robotVmax=robotVmax, robotAmax=robotAmax)
+    T1 = plan1['T']
+
+    t1 = np.linspace(0, T1, 301)
+    pos1, vel1, acc1 = evaluate_motion(plan1, t1)
+
+    print("=== Beta Blend Motion Continuation ===")
+    print(f"Motion 1: 0 -> 10 (end v={plan1['v1_actual']:.2f})")
+    print(f"  Duration: T1={T1:.3f}s")
+
+    # Continue with beta-blend approach to new target
+    x_target = 18
+    plan2 = continue_motion_blend(plan1, x_target=x_target,
+                                   robotVmax=robotVmax, robotAmax=robotAmax)
+    T2 = plan2['T']
+    motion2 = plan2['blend_motion']
+
+    print(f"\nMotion 2 (beta blend): {plan2['x0']:.2f} -> {plan2['x1']:.2f}")
+    print(f"  Duration: T2={T2:.3f}s")
+    print(f"  Start: v={motion2.velocity(0):.4f}, a={motion2.acceleration(0):.4f}")
+
+    # Check continuity
+    v_jump = abs(motion2.velocity(0) - plan1['v1_actual'])
+    a_jump = abs(motion2.acceleration(0) - plan1['a1_actual'])
+    print(f"\nCONTINUITY CHECK:")
+    print(f"  Velocity jump: {v_jump:.12f}")
+    print(f"  Acceleration jump: {a_jump:.12f}")
+
+    t2 = np.linspace(0, T2, 301)
+    pos2 = motion2.position(t2)
+    vel2 = motion2.velocity(t2)
+    acc2 = motion2.acceleration(t2)
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
+    pop2 = motion2.pop(t2)
+    lock2 = motion2.lock(t2)
+    drop2 = motion2.drop(t2)
+
+    # Compute derivatives for motion 1 numerically
+    dt1 = t1[1] - t1[0]
+    jerk1 = np.gradient(acc1, dt1)
+    snap1 = np.gradient(jerk1, dt1)
+    crackle1 = np.gradient(snap1, dt1)
+    pop1 = np.gradient(crackle1, dt1)
+    lock1 = np.gradient(pop1, dt1)
+    drop1 = np.gradient(lock1, dt1)
+
+    # Combined timeline
+    t_combined = np.concatenate([t1, T1 + t2[1:]])
+    pos_combined = np.concatenate([pos1, pos2[1:]])
+    vel_combined = np.concatenate([vel1, vel2[1:]])
+    acc_combined = np.concatenate([acc1, acc2[1:]])
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    pop_combined = np.concatenate([pop1, pop2[1:]])
+    lock_combined = np.concatenate([lock1, lock2[1:]])
+    drop_combined = np.concatenate([drop1, drop2[1:]])
+
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined,
+            snap_combined, crackle_combined, pop_combined, lock_combined, drop_combined]
+
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t_combined, d, color=color, linewidth=2)
+        axs[i].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
+
+        if i == 0:
+            axs[i].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=60, zorder=5)
+        elif i < 4:
+            axs[i].annotate('Continuous!', (T1, d[len(t1)]),
+                            textcoords="offset points", xytext=(15, 5), fontsize=9, color='green', fontweight='bold')
+
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+    axs[-1].annotate('ALL derivatives → 0 smoothly!', (T1 + T2 - 1, 0),
+                     textcoords="offset points", xytext=(-100, 20), fontsize=10, color='green', fontweight='bold')
+
+    plt.suptitle('Beta Blend Continuation: Smooth Transition to New Target', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/beta_blend_continuation.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/beta_blend_continuation.png")
+    plt.close()
+
+
+def plot_beta_blend_reversal():
+    """Demonstrate smooth direction reversal using beta-blend approach."""
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
+
+    robotVmax, robotAmax = 6, 3
+
+    # Start moving right
+    plan1 = plan_motion(0, 8, v0=0, v1=2.5, robotVmax=robotVmax, robotAmax=robotAmax)
+    T1 = plan1['T']
+
+    print("=== Direction Reversal with Beta Blend ===")
+    print(f"Initial motion: 0 -> 8 (ending with v={plan1['v1_actual']:.2f})")
+
+    # Want to go BACK to x=3 (direction reversal!)
+    x_target = 3
+    plan2 = continue_motion_blend(plan1, x_target=x_target,
+                                   robotVmax=robotVmax, robotAmax=robotAmax)
+    T2 = plan2['T']
+    motion2 = plan2['blend_motion']
+
+    print(f"\nBeta blend to x={x_target}:")
+    print(f"  Motion 2: {plan2['x0']:.2f} -> {plan2['x1']:.2f}, T={T2:.3f}s")
+
+    # Evaluate
+    t1 = np.linspace(0, T1, 200)
+    t2 = np.linspace(0, T2, 200)
+
+    pos1, vel1, acc1 = evaluate_motion(plan1, t1)
+    pos2 = motion2.position(t2)
+    vel2 = motion2.velocity(t2)
+    acc2 = motion2.acceleration(t2)
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
+    pop2 = motion2.pop(t2)
+    lock2 = motion2.lock(t2)
+    drop2 = motion2.drop(t2)
+
+    # Compute derivatives for motion 1 numerically
+    dt1 = t1[1] - t1[0]
+    jerk1 = np.gradient(acc1, dt1)
+    snap1 = np.gradient(jerk1, dt1)
+    crackle1 = np.gradient(snap1, dt1)
+    pop1 = np.gradient(crackle1, dt1)
+    lock1 = np.gradient(pop1, dt1)
+    drop1 = np.gradient(lock1, dt1)
+
+    # Combined
+    t_combined = np.concatenate([t1, T1 + t2[1:]])
+    pos_combined = np.concatenate([pos1, pos2[1:]])
+    vel_combined = np.concatenate([vel1, vel2[1:]])
+    acc_combined = np.concatenate([acc1, acc2[1:]])
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    pop_combined = np.concatenate([pop1, pop2[1:]])
+    lock_combined = np.concatenate([lock1, lock2[1:]])
+    drop_combined = np.concatenate([drop1, drop2[1:]])
+
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined,
+            snap_combined, crackle_combined, pop_combined, lock_combined, drop_combined]
+
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t_combined, d, color=color, linewidth=2)
+        axs[i].axvline(x=T1, color='r', linestyle='--', alpha=0.5)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
+
+        if i == 0:
+            axs[i].axhline(y=x_target, color='green', linestyle='--', alpha=0.5, label=f'Target x={x_target}')
+            axs[i].scatter([0, T1, T1+T2], [pos1[0], pos1[-1], pos2[-1]], color='red', s=60, zorder=5)
+            axs[i].legend(fontsize=9)
+        elif i == 1:
+            axs[i].annotate('Smooth reversal', (T1 + T2*0.4, min(vel2)*0.8),
+                            textcoords="offset points", xytext=(0, 0), fontsize=9, color='green')
+
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+
+    plt.suptitle('Direction Reversal with Beta Blend (Clean Derivatives)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/beta_blend_reversal.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/beta_blend_reversal.png")
+    plt.close()
+
+
 if __name__ == '__main__':
     print("Generating plots for generalized S-curve motion...\n")
 
@@ -523,5 +780,13 @@ if __name__ == '__main__':
     plot_curve_segment_visualization()
     plot_motion_continuation()
     plot_direction_reversal()
+
+    # New beta-blend approach plots
+    print("\n" + "="*50)
+    print("NEW BETA-BLEND APPROACH")
+    print("="*50 + "\n")
+    plot_beta_blend_motion()
+    plot_beta_blend_continuation()
+    plot_beta_blend_reversal()
 
     print("\nAll plots generated successfully!")
