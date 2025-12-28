@@ -1239,15 +1239,6 @@ class BetaBlendMotion:
             self.original_T = T
             self.T_remaining_orig = T
 
-        # Compute T_new: optimal duration for new S-curve from x0 to x_target
-        delta_x_new = abs(x_target - x0)
-        if delta_x_new > 1e-10:
-            T_vmax = 2 * delta_x_new / self.robotVmax if self.robotVmax < float('inf') else 1.0
-            T_amax = 2 * sqrt(delta_x_new / self.robotAmax) if self.robotAmax < float('inf') else T_vmax
-            self.T_new = max(T_vmax, T_amax, 0.5)
-        else:
-            self.T_new = 0.5  # Minimum duration
-
         # Compute T_redirect: duration for hypothetical S-curve from x_orig_end → x_target
         # This is the natural time to "redirect" from where we would have ended
         delta_x_redirect = abs(x_target - self.x_orig_end)
@@ -1258,11 +1249,14 @@ class BetaBlendMotion:
         else:
             self.T_redirect = 0.5
 
+        # T_new = T_redirect: x_new uses the SAME duration as redirect curve
+        # This way x_new (x0 → x_target) is stretched to match (x_orig_end → x_target)
+        self.T_new = self.T_redirect
+
         if mode == 'blend':
-            # T = time for redirect motion, but no less than T_remaining_orig
+            # T = time for redirect motion (x_orig_end → x_target)
+            # but no less than T_remaining_orig (so x_orig can finish)
             self.T = max(self.T_redirect, self.T_remaining_orig)
-            # Apply optimization to respect velocity constraints
-            self.T = self._find_optimal_T(self.T)
         else:
             # For shift mode: use the optimization approach
             self.T = max(T if T is not None else 0, self.T_remaining_orig, self.T_new, 0.01)
@@ -1467,12 +1461,13 @@ class BetaBlendMotion:
         """
         Compute x_new(t) and its derivatives ANALYTICALLY.
 
-        x_new is a rest-to-rest S-curve from x0 to x_target over duration T.
-        Both blend and shift modes use T as duration so curves align.
+        x_new is a rest-to-rest S-curve from x_orig_end to x_target over duration T.
+        This is the "redirect" curve - what we'd do if starting fresh from where
+        x_orig would have ended.
         """
         t = np.asarray(t, dtype=float)
 
-        # Both modes use T as duration
+        # Use T as duration (= T_redirect)
         T_curve = self.T
 
         # τ(t) = -1 + 2*t/T_curve, clamped to [-1, 1]
@@ -1481,16 +1476,16 @@ class BetaBlendMotion:
 
         tau_dot = 2 / T_curve if T_curve > 0 else 0
 
-        # For rest-to-rest: S = x_target - x0
-        S = self.x_target - self.x0
+        # x_new goes from x_orig_end to x_target (the redirect curve)
+        S = self.x_target - self.x_orig_end
 
         # Get f and all its derivatives at τ
         f_derivs = normalized_f_derivatives(tau, max_order)
 
-        # x_new^(k) = S * f^(k)(τ) * τ_dot^k + (x0 if k==0 else 0)
+        # x_new^(k) = S * f^(k)(τ) * τ_dot^k + (x_orig_end if k==0 else 0)
         derivs = []
         for k in range(max_order + 1):
-            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (self.x0 if k == 0 else 0))
+            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (self.x_orig_end if k == 0 else 0))
 
         return derivs
 

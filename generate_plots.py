@@ -841,36 +841,20 @@ def plot_blend_comparison():
     snap2 = motion2.snap(t2)
     crackle2 = motion2.crackle(t2)
 
-    # Get x_orig and x_new for dashed lines
+    # Get x_orig derivatives
     orig_derivs = motion2._get_orig_curve_derivatives(t2, max_order=0)
     x_orig = orig_derivs[0]
-    new_derivs = motion2._get_new_curve_derivatives(t2, max_order=0)
+
+    # Get x_new and all its derivatives (x_new = redirect curve from x_orig_end → x_target)
+    new_derivs = motion2._get_new_curve_derivatives(t2, max_order=5)
     x_new = new_derivs[0]
+    vel_new = new_derivs[1]
+    acc_new = new_derivs[2]
+    jerk_new = new_derivs[3]
+    snap_new = new_derivs[4]
+    crackle_new = new_derivs[5]
 
-    # Create hypothetical "redirect" S-curve: x_orig_end → x_target (rest-to-rest)
-    # This shows what a clean S-curve from 15 → 5 would look like
     x_orig_end = motion2.x_orig_end
-    plan_redirect = plan_motion(x_orig_end, x_new_target, v0=0, v1=0,
-                                robotVmax=robotVmax, robotAmax=robotAmax)
-    T_redirect = plan_redirect['T']
-
-    # Evaluate redirect motion over T2 (stretch/compress to match blend duration)
-    t_redirect = np.linspace(0, T_redirect, 150)
-    pos_redirect, vel_redirect, acc_redirect = evaluate_motion(plan_redirect, t_redirect)
-
-    # Compute higher derivatives for redirect motion
-    tau_start_r = plan_redirect['tau_start']
-    tau_end_r = plan_redirect['tau_end']
-    delta_tau_r = tau_end_r - tau_start_r
-    delta_x_r = plan_redirect['x1'] - plan_redirect['x0']
-    S_r = delta_x_r / 1.0  # delta_f = 1
-    tau_dot_r = delta_tau_r / T_redirect
-    tau_r = tau_start_r + delta_tau_r * (t_redirect / T_redirect)
-    f_derivs_r = normalized_f_derivatives(tau_r, max_order=5)
-
-    jerk_redirect = S_r * f_derivs_r[3] * (tau_dot_r ** 3)
-    snap_redirect = S_r * f_derivs_r[4] * (tau_dot_r ** 4)
-    crackle_redirect = S_r * f_derivs_r[5] * (tau_dot_r ** 5)
 
     # Combined timeline
     t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
@@ -883,11 +867,11 @@ def plot_blend_comparison():
 
     # Plot derivatives
     data = [pos_combined, vel_combined, acc_combined, jerk_combined, snap_combined, crackle_combined]
-    redirect_data = [pos_redirect, vel_redirect, acc_redirect, jerk_redirect, snap_redirect, crackle_redirect]
+    new_data = [x_new, vel_new, acc_new, jerk_new, snap_new, crackle_new]
     names = ['Position', 'Velocity', 'Acceleration', 'Jerk', 'Snap (4th)', 'Crackle (5th)']
     color = 'green'
 
-    for row, (d, name, d_redirect) in enumerate(zip(data, names, redirect_data)):
+    for row, (d, name, d_new) in enumerate(zip(data, names, new_data)):
         ax = axs[row]
         ax.plot(t_combined, d, color=color, linewidth=2, label='x(t) blended')
         ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
@@ -895,17 +879,15 @@ def plot_blend_comparison():
         ax.set_ylabel(name)
         ax.grid(True, alpha=0.3)
 
-        # Plot redirect S-curve (x_orig_end → x_target) in cyan dashed
-        ax.plot(t_interrupt + t_redirect, d_redirect, 'cyan', linestyle='--', linewidth=1.5,
-               alpha=0.8, label=f'x_redirect ({x_orig_end:.0f}→{x_new_target})')
+        # Plot x_new (redirect curve from x_orig_end → x_target) in orange dashed
+        ax.plot(t_interrupt + t2, d_new, 'orange', linestyle='--', linewidth=1.5,
+               alpha=0.8, label=f'x_new ({x_orig_end:.0f}→{x_new_target})')
 
         if row == 0:
             ax.set_title('Curve Blend: x(t) = x_orig×(1-β) + x_new×β', fontsize=11)
-            # Add dashed lines for component curves
+            # Add x_orig dashed line
             ax.plot(t_interrupt + t2, x_orig, 'purple', linestyle='--', linewidth=1.5,
                    alpha=0.7, label='x_orig')
-            ax.plot(t_interrupt + t2, x_new, 'orange', linestyle='--', linewidth=1.5,
-                   alpha=0.7, label='x_new')
             ax.axhline(y=x_new_target, color='green', linestyle=':', alpha=0.5)
             ax.scatter([0, t_interrupt, t_interrupt + T2],
                       [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
