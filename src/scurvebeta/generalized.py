@@ -1263,65 +1263,52 @@ class BetaBlendMotion:
 
     def _find_optimal_T(self, T_initial):
         """
-        Find minimum T that respects velocity and acceleration bounds.
+        Find minimum T that ensures finite derivatives.
 
-        Strategy: Iteratively increase T until v <= Vmax and a <= Amax.
+        x_orig runs at natural pace (preserving velocity at t=0), so its
+        acceleration is fixed. We just ensure T >= T_remaining_orig and T_new,
+        and check that velocity stays within bounds.
 
-        Note: Higher derivatives (jerk, snap, etc.) are not constrained
-        because blended motions inherently have larger values due to
-        Leibniz product rule. Constraining them would require very long T.
+        Note: Acceleration may exceed robotAmax during blending because
+        x_orig's natural acceleration + blend terms. This is the trade-off
+        for preserving velocity continuity.
         """
         T = T_initial
         delta_x = abs(self.x_target - self.x0)
 
-        # Minimum T from hard constraints
-        T_min_v = delta_x / self.robotVmax if self.robotVmax < float('inf') else 0.1
-        T_min_a = sqrt(delta_x / self.robotAmax) if self.robotAmax < float('inf') and delta_x > 0 else T_min_v
-        T = max(T, T_min_v, T_min_a, 0.5)
+        # T must be at least as long as both curves need
+        T = max(T, self.T_remaining_orig, self.T_new, 0.5)
 
-        # Iteratively find T that satisfies v and a constraints
-        for iteration in range(20):
+        # Iteratively check that velocity is reasonable
+        for iteration in range(10):
             self.T = T
             t_samples = np.linspace(0, T, 100)
 
-            max_violation = 1.0
-
-            # Check velocity
             try:
                 v_samples = self.velocity(t_samples)
                 if np.any(~np.isfinite(v_samples)):
                     T *= 1.5
                     continue
-                max_v = np.max(np.abs(v_samples))
-                if self.robotVmax < float('inf'):
-                    violation = max_v / self.robotVmax
-                    max_violation = max(max_violation, violation)
-            except Exception:
-                T *= 1.5
-                continue
 
-            # Check acceleration
-            try:
+                max_v = np.max(np.abs(v_samples))
+                if self.robotVmax < float('inf') and max_v > self.robotVmax * 1.01:
+                    T *= (max_v / self.robotVmax) ** 0.5
+                    continue
+
+                # Check derivatives are finite
                 a_samples = self.acceleration(t_samples)
                 if np.any(~np.isfinite(a_samples)):
                     T *= 1.5
                     continue
-                max_a = np.max(np.abs(a_samples))
-                if self.robotAmax < float('inf'):
-                    violation = max_a / self.robotAmax
-                    max_violation = max(max_violation, violation)
+
+                break
             except Exception:
                 T *= 1.5
                 continue
 
-            if max_violation <= 1.01:
+            if T > 30:
+                T = 30
                 break
-            else:
-                # Scale T by square root of violation (a scales as 1/T²)
-                T *= max_violation ** 0.5
-                if T > 60:
-                    T = 60
-                    break
 
         self.T = T
         return T
@@ -1597,14 +1584,11 @@ class BetaBlendMotion:
         tau_end = plan['tau_end']
         original_T = plan['T']
 
-        # Both modes: stretch x_orig to reach tau_end at t=T
-        # This ensures x_orig's acceleration stays below limit,
-        # leaving headroom for the blending/shift terms
-        tau_remaining = tau_end - self.tau_current
-        tau_dot = tau_remaining / self.T if self.T > 0 else 0
+        # x_orig runs at its NATURAL pace to preserve velocity at t=0!
+        original_tau_dot = (tau_end - tau_start) / original_T if original_T > 0 else 0
 
-        # τ(t) = τ_current + tau_dot × t
-        tau = self.tau_current + tau_dot * t
+        # τ(t) = τ_current + original_tau_dot × t
+        tau = self.tau_current + original_tau_dot * t
         tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
 
         # Scaling factor for position
@@ -1619,7 +1603,14 @@ class BetaBlendMotion:
         # x_orig^(k) = S × f^(k)(τ) × τ_dot^k
         derivs = []
         for k in range(max_order + 1):
-            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (offset if k == 0 else 0))
+            val = S * f_derivs[k] * (original_tau_dot ** k) + (offset if k == 0 else 0)
+            # After T_remaining_orig, x_orig is at rest at x_orig_end
+            past_end = t > self.T_remaining_orig
+            if k == 0:
+                val = np.where(past_end, self.x_orig_end, val)
+            else:
+                val = np.where(past_end, 0.0, val)
+            derivs.append(val)
 
         return derivs
 
