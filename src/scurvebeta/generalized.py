@@ -1194,57 +1194,105 @@ class BetaBlendMotion:
         self.T = self._find_optimal_T(self.T)
 
     def _find_optimal_T(self, T_initial):
-        """Adjust T to respect velocity and acceleration constraints."""
-        T = T_initial
-        T_max = 15.0  # Reasonable max to prevent T² blowup in trajectory
+        """
+        Find optimal T that respects velocity constraints.
 
-        for iteration in range(10):
+        With the elegant blend formula x = x_inertial*(1-β) + x_target*β,
+        larger T actually makes velocity smaller (smoother transition).
+        So we increase T until velocity is within bounds.
+        """
+        T = T_initial
+
+        # Minimum T based on distance and velocity limit
+        delta_x = abs(self.x_target - self.x0)
+        T_min_v = delta_x / self.robotVmax if self.robotVmax < float('inf') else 0.1
+        T = max(T, T_min_v)
+
+        # Iterate to find T that satisfies velocity constraint
+        for iteration in range(20):
             self.T = T
 
             # Sample to check constraints
             t_samples = np.linspace(0, T, 100)
             v_samples = self.velocity(t_samples)
-            a_samples = self.acceleration(t_samples)
 
             # Check for NaN/Inf
-            if np.any(~np.isfinite(v_samples)) or np.any(~np.isfinite(a_samples)):
-                break
+            if np.any(~np.isfinite(v_samples)):
+                T *= 1.5
+                continue
 
             max_v = np.max(np.abs(v_samples))
-            max_a = np.max(np.abs(a_samples))
 
-            # Scale T to respect constraints (but don't scale up too aggressively)
-            scale = 1.0
-            if np.isfinite(max_v) and max_v > self.robotVmax:
-                scale = max(scale, (max_v / self.robotVmax) ** 0.5)  # Square root for stability
-            if np.isfinite(max_a) and max_a > self.robotAmax:
-                scale = max(scale, (max_a / self.robotAmax) ** 0.25)  # Fourth root for stability
-
-            if scale > 1.01:
-                T = min(T * scale * 1.1, T_max)
-                if T >= T_max:
-                    break
-            else:
+            if max_v <= self.robotVmax * 1.01:
+                # Constraint satisfied
                 break
+            else:
+                # Increase T proportionally
+                T *= (max_v / self.robotVmax)
 
         self.T = T
         return T
+
+    def _inertial_position(self, t):
+        """
+        Compute inertial trajectory: what would happen if we just continued
+        with current velocity and acceleration (and higher derivatives).
+
+        x_inertial(t) = x0 + v0*t + (1/2)*a0*t² + (1/6)*j0*t³ + ...
+        """
+        t = np.asarray(t, dtype=float)
+        result = self.x0 + self.v0 * t + 0.5 * self.a0 * t**2
+        if hasattr(self, 'j0') and self.j0 != 0:
+            result += (1/6) * self.j0 * t**3
+        if hasattr(self, 'snap0') and self.snap0 != 0:
+            result += (1/24) * self.snap0 * t**4
+        return result
+
+    def _inertial_derivative(self, t, order):
+        """Compute derivative of inertial trajectory."""
+        t = np.asarray(t, dtype=float)
+        if order == 0:
+            return self._inertial_position(t)
+        elif order == 1:
+            result = self.v0 + self.a0 * t
+            if hasattr(self, 'j0') and self.j0 != 0:
+                result += 0.5 * self.j0 * t**2
+            return result
+        elif order == 2:
+            result = self.a0 * np.ones_like(t)
+            if hasattr(self, 'j0') and self.j0 != 0:
+                result += self.j0 * t
+            return result
+        elif order == 3:
+            if hasattr(self, 'j0'):
+                return self.j0 * np.ones_like(t)
+            return np.zeros_like(t)
+        else:
+            return np.zeros_like(t)
 
     def _eval_derivative(self, t, order):
         """
         Compute the k-th derivative of position at time t.
 
-        Simple τ-normalized formulation that matches position and velocity only:
-        x(t) = x0 + (x_target - x0) * β(τ) + v0*T * φ₁(τ)
+        Elegant S-curve blend formulation:
+        x(t) = x_inertial(t) * (1 - β(τ)) + x_target * β(τ)
 
         where:
         - τ = t/T ∈ [0,1]
-        - φ₁(τ) = τ*(1-β(τ)) matches velocity at τ=0, goes to 0 at τ=1
+        - β(τ) is the S-curve with ALL derivatives = 0 at τ=0 and τ=1
+        - x_inertial(t) = x0 + v0*t + 0.5*a0*t² + ... is the inertial trajectory
 
-        This avoids the T² blowup from acceleration matching while ensuring:
-        - x(0) = x0, x(T) = x_target
-        - v(0) = v0, v(T) = 0
-        - Smooth S-curve transition
+        The magic: Since β and all its derivatives are 0 at τ=0:
+        - x(0) = x_inertial(0) = x0
+        - v(0) = v_inertial(0) = v0
+        - a(0) = a_inertial(0) = a0
+        - All derivatives match exactly!
+
+        And since β=1 and all derivatives are 0 at τ=1:
+        - x(T) = x_target
+        - v(T) = 0
+        - a(T) = 0
+        - All derivatives are exactly 0!
         """
         t = np.asarray(t, dtype=float)
         scalar = t.ndim == 0
@@ -1256,34 +1304,45 @@ class BetaBlendMotion:
         tau = t / T
 
         # Get β and its derivatives w.r.t. τ
-        beta_derivs = _beta_s_derivatives(tau, max_order=max(k, 1))
+        beta_derivs = _beta_s_derivatives(tau, max_order=k)
         beta = beta_derivs[0]
-        one_minus_beta = 1 - beta
 
-        # Position term: (x_target - x0) * β(τ)
-        dx_target = self.x_target - self.x0
+        # x(t) = x_inertial(t) * (1 - β) + x_target * β
+        # Use Leibniz rule for derivatives of the product
 
         if k == 0:
-            # x(t) = x0 + Δx*β + v0*T*τ*(1-β)
-            result = self.x0 + dx_target * beta + self.v0 * T * tau * one_minus_beta
-        elif k == 1:
-            # v(t) = Δx*β'/T + v0*[(1-β) - τ*β']
-            beta_prime = beta_derivs[1]
-            result = dx_target * beta_prime / T + self.v0 * (one_minus_beta - tau * beta_prime)
-        elif k == 2:
-            # a(t) = Δx*β''/T² + v0*[-2β'/T - τ*β''/T]
-            beta_prime = beta_derivs[1]
-            beta_double_prime = beta_derivs[2] if len(beta_derivs) > 2 else np.zeros_like(tau)
-            result = dx_target * beta_double_prime / (T**2)
-            result += self.v0 * (-2 * beta_prime / T - tau * beta_double_prime / T)
+            x_inertial = self._inertial_position(t)
+            result = x_inertial * (1 - beta) + self.x_target * beta
+
         else:
-            # Higher derivatives via numerical differentiation
-            eps = 1e-5 * T
-            t_p = np.clip(t + eps, 0, T)
-            t_m = np.clip(t - eps, 0, T)
-            deriv_p = self._eval_derivative(t_p, k - 1)
-            deriv_m = self._eval_derivative(t_m, k - 1)
-            result = (deriv_p - deriv_m) / (2 * eps)
+            # d^k/dt^k [x_inertial * (1-β) + x_target * β]
+            # = d^k/dt^k [x_inertial * (1-β)] + x_target * d^k/dt^k [β]
+            #
+            # For x_inertial * (1-β): Use Leibniz rule
+            # For x_target * β: x_target is constant, so just d^k/dt^k [β]
+
+            from math import comb
+
+            result = np.zeros_like(t)
+
+            # Term 1: d^k/dt^k [x_inertial * (1-β)] via Leibniz
+            for i in range(k + 1):
+                x_deriv_i = self._inertial_derivative(t, i)
+                j = k - i  # derivative order for (1-β)
+
+                # d^j/dt^j [(1-β(t/T))] = -d^j/dt^j [β(t/T)] = -(1/T)^j * β^(j)(τ)
+                if j == 0:
+                    one_minus_beta_deriv_j = 1 - beta
+                elif j < len(beta_derivs):
+                    one_minus_beta_deriv_j = -beta_derivs[j] / (T ** j)
+                else:
+                    one_minus_beta_deriv_j = np.zeros_like(tau)
+
+                result += comb(k, i) * x_deriv_i * one_minus_beta_deriv_j
+
+            # Term 2: x_target * d^k/dt^k [β(t/T)] = x_target * (1/T)^k * β^(k)(τ)
+            if k < len(beta_derivs):
+                result += self.x_target * beta_derivs[k] / (T ** k)
 
         return float(result[0]) if scalar else result
 
