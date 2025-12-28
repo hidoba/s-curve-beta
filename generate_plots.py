@@ -885,15 +885,19 @@ def plot_blend_comparison():
                           [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
                 ax.legend(loc='upper right', fontsize=8)
 
-        # Plot beta functions (row 6)
+        # Plot beta functions (row 6) - use full time range like other plots
         ax = axs[6, col]
         t2_extended = np.linspace(0, T2, 200)
 
+        # Full timeline matching other plots
+        t_full = np.concatenate([t1, t_interrupt + t2_extended])
+
         if mode == 'shift':
-            # Single β over duration T
+            # Single β over duration T (0 before interrupt)
             s = t2_extended / T2
             beta = _beta_s(s)
-            ax.plot(t_interrupt + t2_extended, beta, color='purple', linewidth=2, label='β')
+            beta_full = np.concatenate([np.zeros_like(t1), beta])
+            ax.plot(t_full, beta_full, color='purple', linewidth=2, label='β')
             ax.set_ylabel('β' if col == 0 else '')
         else:
             # Two betas: β₁ over T_remaining_orig, β₂ over T_new
@@ -910,9 +914,13 @@ def plot_blend_comparison():
             beta2 = _beta_s(s2)
             beta2 = np.where(t2_extended > T_new, 1.0, beta2)
 
-            ax.plot(t_interrupt + t2_extended, beta1, color='purple', linewidth=2, label='β₁ (fades out x_orig)')
-            ax.plot(t_interrupt + t2_extended, beta2, color='orange', linewidth=2, label='β₂ (fades in x_new)')
-            ax.plot(t_interrupt + t2_extended, 1 - beta1, color='purple', linewidth=1.5,
+            # Full timeline (0 before interrupt)
+            beta1_full = np.concatenate([np.zeros_like(t1), beta1])
+            beta2_full = np.concatenate([np.zeros_like(t1), beta2])
+
+            ax.plot(t_full, beta1_full, color='purple', linewidth=2, label='β₁ (fades out x_orig)')
+            ax.plot(t_full, beta2_full, color='orange', linewidth=2, label='β₂ (fades in x_new)')
+            ax.plot(t_full, 1 - beta1_full, color='purple', linewidth=1.5,
                    linestyle='--', alpha=0.5, label='1-β₁')
 
             # Mark T_new if different from T
