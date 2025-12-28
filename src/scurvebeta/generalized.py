@@ -1239,8 +1239,7 @@ class BetaBlendMotion:
             self.original_T = T
             self.T_remaining_orig = T
 
-        # Compute T_new: optimal duration for new S-curve to reach target
-        # This is based on distance and constraints (like plan_motion does)
+        # Compute T_new: optimal duration for new S-curve from x0 to x_target
         delta_x_new = abs(x_target - x0)
         if delta_x_new > 1e-10:
             T_vmax = 2 * delta_x_new / self.robotVmax if self.robotVmax < float('inf') else 1.0
@@ -1249,11 +1248,19 @@ class BetaBlendMotion:
         else:
             self.T_new = 0.5  # Minimum duration
 
+        # Compute T_redirect: duration for hypothetical S-curve from x_orig_end → x_target
+        # This is the natural time to "redirect" from where we would have ended
+        delta_x_redirect = abs(x_target - self.x_orig_end)
+        if delta_x_redirect > 1e-10:
+            T_vmax_r = 2 * delta_x_redirect / self.robotVmax if self.robotVmax < float('inf') else 1.0
+            T_amax_r = 2 * sqrt(delta_x_redirect / self.robotAmax) if self.robotAmax < float('inf') else T_vmax_r
+            self.T_redirect = max(T_vmax_r, T_amax_r, 0.5)
+        else:
+            self.T_redirect = 0.5
+
         if mode == 'blend':
-            # For curve blend: both betas use the SAME T
-            # T must be >= both T_remaining_orig (so x_orig finishes) and T_new (so x_new finishes)
-            # We stretch whichever curve is shorter to match the longer one
-            self.T = max(self.T_remaining_orig, self.T_new)
+            # T = time for redirect motion, but no less than T_remaining_orig
+            self.T = max(self.T_redirect, self.T_remaining_orig)
             # Apply optimization to respect velocity constraints
             self.T = self._find_optimal_T(self.T)
         else:
@@ -1263,23 +1270,13 @@ class BetaBlendMotion:
 
     def _find_optimal_T(self, T_initial):
         """
-        Find minimum T that ensures manageable higher derivatives.
+        Validate T and ensure velocity stays within bounds.
 
-        x_orig runs at natural pace (preserving velocity at t=0), so its
-        acceleration is fixed. We ensure T is significantly larger than
-        T_remaining_orig so that x_orig finishes BEFORE β's derivatives
-        peak (which happens near the end of the transition).
-
-        If T ≈ T_remaining_orig, x_orig stopping coincides with β's high
-        derivatives → large snap/crackle. Making T larger separates these.
+        T is already set based on T_redirect (time for x_orig_end → x_target)
+        but no less than T_remaining_orig. This gives a physically meaningful
+        duration for the blending motion.
         """
         T = T_initial
-        delta_x = abs(self.x_target - self.x0)
-
-        # T must be larger than both curves need, with padding so x_orig
-        # finishes well before β completes (reducing snap/crackle)
-        T_min = max(self.T_remaining_orig, self.T_new, 0.5)
-        T = max(T, T_min * 1.4)  # 40% buffer for smooth β completion
 
         # Iteratively check that velocity is reasonable
         for iteration in range(10):

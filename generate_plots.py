@@ -773,14 +773,13 @@ def plot_beta_blend_reversal():
 
 def plot_blend_comparison():
     """
-    Compare the two blending approaches:
-    1. Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] * β(s)
-    2. Curve Blend: x(t) = x_orig(t) * (1-β₁) + x_new(t) * β₂
+    Show the Curve Blend approach for mid-motion redirection:
+    x(t) = x_orig(t) * (1-β) + x_new(t) * β
     """
     from scurvebeta.generalized import normalized_f_derivatives, normalized_f, _beta_s
 
     # 7 rows: Position, Velocity, Acceleration, Jerk, Snap, Crackle, Betas
-    fig, axs = plt.subplots(7, 2, figsize=(14, 21))
+    fig, axs = plt.subplots(7, 1, figsize=(10, 21))
 
     robotVmax, robotAmax = 6, 3
 
@@ -820,100 +819,92 @@ def plot_blend_comparison():
     snap1 = S * f_derivs1[4] * (tau_dot ** 4)
     crackle1 = S * f_derivs1[5] * (tau_dot ** 5)
 
-    # Two approaches
-    modes = ['shift', 'blend']
-    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β) + x_new×β']
-    colors = ['blue', 'green']
+    # Curve Blend approach only
+    plan2 = continue_motion_blend(plan1, x_target=x_new_target,
+                                   robotVmax=robotVmax, robotAmax=robotAmax,
+                                   t_interrupt=t_interrupt, mode='blend')
+    T2 = plan2['T']
+    motion2 = plan2['blend_motion']
 
-    for col, (mode, title, color) in enumerate(zip(modes, titles, colors)):
-        plan2 = continue_motion_blend(plan1, x_target=x_new_target,
-                                       robotVmax=robotVmax, robotAmax=robotAmax,
-                                       t_interrupt=t_interrupt, mode=mode)
-        T2 = plan2['T']
-        motion2 = plan2['blend_motion']
+    print(f"\nCurve Blend: x_orig×(1-β) + x_new×β:")
+    print(f"  Duration: T={T2:.3f}s")
+    print(f"  T_remaining_orig={motion2.T_remaining_orig:.3f}s")
+    print(f"  T_redirect={motion2.T_redirect:.3f}s (time for {motion2.x_orig_end:.1f} → {x_new_target})")
+    print(f"  v(0)={motion2.velocity(0):.4f}, v(T)={motion2.velocity(T2):.6f}")
+    print(f"  a(0)={motion2.acceleration(0):.4f}, a(T)={motion2.acceleration(T2):.6f}")
 
-        print(f"\n{title}:")
-        print(f"  Duration: T={T2:.3f}s")
-        print(f"  T_remaining_orig={motion2.T_remaining_orig:.3f}s, T_new={motion2.T_new:.3f}s")
-        print(f"  v(0)={motion2.velocity(0):.4f}, v(T)={motion2.velocity(T2):.6f}")
-        print(f"  a(0)={motion2.acceleration(0):.4f}, a(T)={motion2.acceleration(T2):.6f}")
+    t2 = np.linspace(0, T2, 150)
+    pos2 = motion2.position(t2)
+    vel2 = motion2.velocity(t2)
+    acc2 = motion2.acceleration(t2)
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
 
-        t2 = np.linspace(0, T2, 150)
-        pos2 = motion2.position(t2)
-        vel2 = motion2.velocity(t2)
-        acc2 = motion2.acceleration(t2)
-        jerk2 = motion2.jerk(t2)
-        snap2 = motion2.snap(t2)
-        crackle2 = motion2.crackle(t2)
+    # Get x_orig and x_new for dashed lines
+    orig_derivs = motion2._get_orig_curve_derivatives(t2, max_order=0)
+    x_orig = orig_derivs[0]
+    new_derivs = motion2._get_new_curve_derivatives(t2, max_order=0)
+    x_new = new_derivs[0]
 
-        # Get x_orig and x_new for dashed lines (only for t >= t_interrupt)
-        orig_derivs = motion2._get_orig_curve_derivatives(t2, max_order=0)
-        x_orig = orig_derivs[0]
-        new_derivs = motion2._get_new_curve_derivatives(t2, max_order=0)
-        x_new = new_derivs[0]
+    # Combined timeline
+    t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
+    pos_combined = np.concatenate([pos1, pos2[1:]])
+    vel_combined = np.concatenate([vel1, vel2[1:]])
+    acc_combined = np.concatenate([acc1, acc2[1:]])
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
 
-        # Combined timeline
-        t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
-        pos_combined = np.concatenate([pos1, pos2[1:]])
-        vel_combined = np.concatenate([vel1, vel2[1:]])
-        acc_combined = np.concatenate([acc1, acc2[1:]])
-        jerk_combined = np.concatenate([jerk1, jerk2[1:]])
-        snap_combined = np.concatenate([snap1, snap2[1:]])
-        crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    # Plot derivatives
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined, snap_combined, crackle_combined]
+    names = ['Position', 'Velocity', 'Acceleration', 'Jerk', 'Snap (4th)', 'Crackle (5th)']
+    color = 'green'
 
-        # Plot derivatives
-        data = [pos_combined, vel_combined, acc_combined, jerk_combined, snap_combined, crackle_combined]
-        names = ['Position', 'Velocity', 'Acceleration', 'Jerk', 'Snap (4th)', 'Crackle (5th)']
-
-        for row, (d, name) in enumerate(zip(data, names)):
-            ax = axs[row, col]
-            ax.plot(t_combined, d, color=color, linewidth=2, label='x(t)')
-            ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
-            ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-            ax.set_ylabel(name if col == 0 else '')
-            ax.grid(True, alpha=0.3)
-
-            if row == 0:
-                ax.set_title(title, fontsize=11)
-                # Add dashed lines for component curves
-                ax.plot(t_interrupt + t2, x_orig, 'purple', linestyle='--', linewidth=1.5,
-                       alpha=0.7, label='x_orig')
-                if mode == 'blend':
-                    # Only show x_new for Curve Blend (Space Shift doesn't use it)
-                    ax.plot(t_interrupt + t2, x_new, 'orange', linestyle='--', linewidth=1.5,
-                           alpha=0.7, label='x_new')
-                ax.axhline(y=x_new_target, color='green', linestyle=':', alpha=0.5)
-                ax.scatter([0, t_interrupt, t_interrupt + T2],
-                          [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
-                ax.legend(loc='upper right', fontsize=8)
-
-        # Plot beta functions (row 6) - use full time range like other plots
-        ax = axs[6, col]
-        t2_extended = np.linspace(0, T2, 200)
-
-        # Full timeline matching other plots
-        t_full = np.concatenate([t1, t_interrupt + t2_extended])
-
-        # Both modes now use single β over duration T
-        s = t2_extended / T2
-        beta = _beta_s(s)
-        beta_full = np.concatenate([np.zeros_like(t1), beta])
-
-        ax.plot(t_full, beta_full, color='purple', linewidth=2, label='β')
-        ax.plot(t_full, 1 - beta_full, color='purple', linewidth=1.5,
-               linestyle='--', alpha=0.5, label='1-β')
-        ax.set_ylabel('β' if col == 0 else '')
-
+    for row, (d, name) in enumerate(zip(data, names)):
+        ax = axs[row]
+        ax.plot(t_combined, d, color=color, linewidth=2, label='x(t)')
         ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
         ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
-        ax.axhline(y=1, color='gray', linestyle='-', alpha=0.3)
-        ax.set_ylim(-0.1, 1.1)
-        ax.set_xlabel('Time (s)')
+        ax.set_ylabel(name)
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='center right', fontsize=8)
 
-    plt.suptitle('Comparison: Space Shift vs Curve Blend\n'
-                 'Both give C∞ continuity via S-curve blending!',
+        if row == 0:
+            ax.set_title('Curve Blend: x(t) = x_orig×(1-β) + x_new×β', fontsize=11)
+            # Add dashed lines for component curves
+            ax.plot(t_interrupt + t2, x_orig, 'purple', linestyle='--', linewidth=1.5,
+                   alpha=0.7, label='x_orig')
+            ax.plot(t_interrupt + t2, x_new, 'orange', linestyle='--', linewidth=1.5,
+                   alpha=0.7, label='x_new')
+            ax.axhline(y=x_new_target, color='green', linestyle=':', alpha=0.5)
+            ax.scatter([0, t_interrupt, t_interrupt + T2],
+                      [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
+            ax.legend(loc='upper right', fontsize=8)
+
+    # Plot beta functions (row 6)
+    ax = axs[6]
+    t2_extended = np.linspace(0, T2, 200)
+    t_full = np.concatenate([t1, t_interrupt + t2_extended])
+
+    s = t2_extended / T2
+    beta = _beta_s(s)
+    beta_full = np.concatenate([np.zeros_like(t1), beta])
+
+    ax.plot(t_full, beta_full, color='purple', linewidth=2, label='β')
+    ax.plot(t_full, 1 - beta_full, color='purple', linewidth=1.5,
+           linestyle='--', alpha=0.5, label='1-β')
+    ax.set_ylabel('β')
+
+    ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
+    ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+    ax.axhline(y=1, color='gray', linestyle='-', alpha=0.3)
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_xlabel('Time (s)')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='center right', fontsize=8)
+
+    plt.suptitle('Mid-Motion Redirection with C∞ Continuity\n'
+                 'Curve Blend: smooth transition to new target',
                  fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('/home/user/s-curve-beta/img/blend_comparison.png', dpi=150, bbox_inches='tight')
