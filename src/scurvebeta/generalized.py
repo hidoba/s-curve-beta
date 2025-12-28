@@ -1263,21 +1263,23 @@ class BetaBlendMotion:
 
     def _find_optimal_T(self, T_initial):
         """
-        Find minimum T that ensures finite derivatives.
+        Find minimum T that ensures manageable higher derivatives.
 
         x_orig runs at natural pace (preserving velocity at t=0), so its
-        acceleration is fixed. We just ensure T >= T_remaining_orig and T_new,
-        and check that velocity stays within bounds.
+        acceleration is fixed. We ensure T is significantly larger than
+        T_remaining_orig so that x_orig finishes BEFORE β's derivatives
+        peak (which happens near the end of the transition).
 
-        Note: Acceleration may exceed robotAmax during blending because
-        x_orig's natural acceleration + blend terms. This is the trade-off
-        for preserving velocity continuity.
+        If T ≈ T_remaining_orig, x_orig stopping coincides with β's high
+        derivatives → large snap/crackle. Making T larger separates these.
         """
         T = T_initial
         delta_x = abs(self.x_target - self.x0)
 
-        # T must be at least as long as both curves need
-        T = max(T, self.T_remaining_orig, self.T_new, 0.5)
+        # T must be larger than both curves need, with padding so x_orig
+        # finishes well before β completes (reducing snap/crackle)
+        T_min = max(self.T_remaining_orig, self.T_new, 0.5)
+        T = max(T, T_min * 1.4)  # 40% buffer for smooth β completion
 
         # Iteratively check that velocity is reasonable
         for iteration in range(10):
