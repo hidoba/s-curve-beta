@@ -771,6 +771,258 @@ def plot_beta_blend_reversal():
     plt.close()
 
 
+def plot_blend_comparison():
+    """
+    Compare the two blending approaches:
+    1. Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] * β(s)
+    2. Curve Blend: x(t) = x_orig(t) * (1-β) + x_new(t) * β
+    """
+    fig, axs = plt.subplots(4, 2, figsize=(14, 14))
+
+    robotVmax, robotAmax = 6, 3
+
+    # Original motion: 0 -> 15
+    plan1 = plan_motion(0, 15, v0=0, v1=0, robotVmax=robotVmax, robotAmax=robotAmax)
+    T1 = plan1['T']
+
+    # Interrupt at mid-motion
+    t_interrupt = T1 * 0.5
+    x_int, v_int, a_int = evaluate_motion(plan1, t_interrupt)
+
+    # New target
+    x_new_target = 5
+
+    print("="*60)
+    print("COMPARING TWO BLEND APPROACHES")
+    print("="*60)
+    print(f"\nOriginal: 0 -> 15, interrupted at t={t_interrupt:.2f}s")
+    print(f"State at interrupt: x={x_int:.2f}, v={v_int:.2f}, a={a_int:.4f}")
+    print(f"New target: {x_new_target}")
+
+    # Timeline before interrupt
+    t1 = np.linspace(0, t_interrupt, 100)
+    pos1, vel1, acc1 = evaluate_motion(plan1, t1)
+
+    # Two approaches
+    modes = ['shift', 'blend']
+    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β) + x_new×β']
+    colors = ['blue', 'green']
+
+    for col, (mode, title, color) in enumerate(zip(modes, titles, colors)):
+        plan2 = continue_motion_blend(plan1, x_target=x_new_target,
+                                       robotVmax=robotVmax, robotAmax=robotAmax,
+                                       t_interrupt=t_interrupt, mode=mode)
+        T2 = plan2['T']
+        motion2 = plan2['blend_motion']
+
+        print(f"\n{title}:")
+        print(f"  Duration: T={T2:.3f}s")
+        print(f"  v(0)={motion2.velocity(0):.4f}, v(T)={motion2.velocity(T2):.6f}")
+        print(f"  a(0)={motion2.acceleration(0):.4f}, a(T)={motion2.acceleration(T2):.6f}")
+
+        t2 = np.linspace(0, T2, 150)
+        pos2 = motion2.position(t2)
+        vel2 = motion2.velocity(t2)
+        acc2 = motion2.acceleration(t2)
+        jerk2 = motion2.jerk(t2)
+
+        # Combined
+        t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
+        pos_combined = np.concatenate([pos1, pos2[1:]])
+        vel_combined = np.concatenate([vel1, vel2[1:]])
+        acc_combined = np.concatenate([acc1, acc2[1:]])
+
+        # Jerk for motion 1
+        dt1 = t1[1] - t1[0]
+        jerk1 = np.gradient(acc1, dt1)
+        jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+
+        # Plot
+        data = [pos_combined, vel_combined, acc_combined, jerk_combined]
+        names = ['Position', 'Velocity', 'Acceleration', 'Jerk']
+
+        for row, (d, name) in enumerate(zip(data, names)):
+            ax = axs[row, col]
+            ax.plot(t_combined, d, color=color, linewidth=2)
+            ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
+            ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+            ax.set_ylabel(name if col == 0 else '')
+            ax.grid(True, alpha=0.3)
+
+            if row == 0:
+                ax.set_title(title, fontsize=11)
+                ax.axhline(y=x_new_target, color='green', linestyle='--', alpha=0.5)
+                ax.scatter([0, t_interrupt, t_interrupt + T2],
+                          [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
+
+        axs[-1, col].set_xlabel('Time (s)')
+
+    plt.suptitle('Comparison: Space Shift vs Curve Blend\n'
+                 'Both give C∞ continuity via S-curve blending!',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/blend_comparison.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/blend_comparison.png")
+    plt.close()
+
+
+def plot_mid_motion_redirect():
+    """
+    KEY TEST: Interrupt a motion MID-WAY and redirect to new target.
+
+    This demonstrates the core concept:
+    - We're executing an S-curve motion to target A
+    - At time t_interrupt (middle of motion), we want to go to target B instead
+    - We TRANSFORM the remaining S-curve segment to reach B
+    - The transformation uses another S-curve, giving C∞ continuity!
+    """
+    fig, axs = plt.subplots(9, 1, figsize=(14, 22))
+
+    robotVmax, robotAmax = 6, 3
+
+    # Original motion: 0 -> 15 (full rest-to-rest)
+    plan1 = plan_motion(0, 15, v0=0, v1=0, robotVmax=robotVmax, robotAmax=robotAmax)
+    T1 = plan1['T']
+
+    print("="*60)
+    print("MID-MOTION REDIRECT: S-curve Spatial Transformation")
+    print("="*60)
+    print(f"\nOriginal motion: 0 -> 15, T={T1:.3f}s")
+
+    # Interrupt at t = T1/2 (exactly mid-motion!)
+    t_interrupt = T1 * 0.5
+
+    # Get state at interrupt point
+    x_int, v_int, a_int = evaluate_motion(plan1, t_interrupt)
+    tau_int = plan1['tau_start'] + (plan1['tau_end'] - plan1['tau_start']) * (t_interrupt / T1)
+
+    print(f"\nInterrupt at t={t_interrupt:.3f}s (τ={tau_int:.3f}):")
+    print(f"  Position: x={x_int:.4f}")
+    print(f"  Velocity: v={v_int:.4f}")
+    print(f"  Acceleration: a={a_int:.4f}")
+
+    # New target: redirect to x=5 instead of 15!
+    x_new_target = 5
+
+    print(f"\nRedirecting to new target: x={x_new_target}")
+    print(f"  Original would have ended at: x=15")
+    print(f"  Space shift = {x_new_target} - 15 = {x_new_target - 15}")
+
+    # Use continue_motion_blend with t_interrupt to transform remaining curve
+    plan2 = continue_motion_blend(plan1, x_target=x_new_target,
+                                   robotVmax=robotVmax, robotAmax=robotAmax,
+                                   t_interrupt=t_interrupt)
+    T2 = plan2['T']
+    motion2 = plan2['blend_motion']
+
+    print(f"\nTransformed motion: T={T2:.3f}s")
+    print(f"  Start: x={motion2.position(0):.4f}, v={motion2.velocity(0):.4f}, a={motion2.acceleration(0):.4f}")
+    print(f"  End: x={motion2.position(T2):.4f}, v={motion2.velocity(T2):.6f}, a={motion2.acceleration(T2):.6f}")
+
+    # Check continuity at interrupt point
+    v_jump = abs(motion2.velocity(0) - v_int)
+    a_jump = abs(motion2.acceleration(0) - a_int)
+    print(f"\nCONTINUITY CHECK at interrupt:")
+    print(f"  Velocity jump: {v_jump:.12f}")
+    print(f"  Acceleration jump: {a_jump:.12f}")
+    print(f"  Perfect continuity: {v_jump < 1e-6 and a_jump < 1e-6}")
+
+    # Timeline 1: original motion up to interrupt
+    t1 = np.linspace(0, t_interrupt, 150)
+    pos1, vel1, acc1 = evaluate_motion(plan1, t1)
+
+    # Timeline 2: transformed motion from interrupt
+    t2 = np.linspace(0, T2, 200)
+    pos2 = motion2.position(t2)
+    vel2 = motion2.velocity(t2)
+    acc2 = motion2.acceleration(t2)
+    jerk2 = motion2.jerk(t2)
+    snap2 = motion2.snap(t2)
+    crackle2 = motion2.crackle(t2)
+    pop2 = motion2.pop(t2)
+    lock2 = motion2.lock(t2)
+    drop2 = motion2.drop(t2)
+
+    # Also show what WOULD have happened (original motion continuing)
+    t_orig_after = np.linspace(t_interrupt, T1, 150)
+    pos_orig, vel_orig, acc_orig = evaluate_motion(plan1, t_orig_after)
+
+    # Compute derivatives for motion 1 numerically
+    dt1 = t1[1] - t1[0] if len(t1) > 1 else 0.01
+    jerk1 = np.gradient(acc1, dt1)
+    snap1 = np.gradient(jerk1, dt1)
+    crackle1 = np.gradient(snap1, dt1)
+    pop1 = np.gradient(crackle1, dt1)
+    lock1 = np.gradient(pop1, dt1)
+    drop1 = np.gradient(lock1, dt1)
+
+    # Combined timeline
+    t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
+    pos_combined = np.concatenate([pos1, pos2[1:]])
+    vel_combined = np.concatenate([vel1, vel2[1:]])
+    acc_combined = np.concatenate([acc1, acc2[1:]])
+    jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+    snap_combined = np.concatenate([snap1, snap2[1:]])
+    crackle_combined = np.concatenate([crackle1, crackle2[1:]])
+    pop_combined = np.concatenate([pop1, pop2[1:]])
+    lock_combined = np.concatenate([lock1, lock2[1:]])
+    drop_combined = np.concatenate([drop1, drop2[1:]])
+
+    derivative_names = ['Position', 'Velocity', 'Acceleration', 'Jerk',
+                        'Snap (4th)', 'Crackle (5th)', 'Pop (6th)', 'Lock (7th)', 'Drop (8th)']
+    colors = ['blue', 'green', 'orange', 'purple', 'brown', 'red', 'magenta', 'cyan', 'olive']
+    data = [pos_combined, vel_combined, acc_combined, jerk_combined,
+            snap_combined, crackle_combined, pop_combined, lock_combined, drop_combined]
+
+    for i, (name, color, d) in enumerate(zip(derivative_names, colors, data)):
+        axs[i].plot(t_combined, d, color=color, linewidth=2, label='Actual path')
+
+        # Show original path (what would have happened)
+        if i == 0:
+            axs[i].plot(t_orig_after, pos_orig, 'gray', linestyle='--', linewidth=1.5,
+                       alpha=0.5, label='Original path (abandoned)')
+        elif i == 1:
+            axs[i].plot(t_orig_after, vel_orig, 'gray', linestyle='--', linewidth=1.5, alpha=0.5)
+        elif i == 2:
+            axs[i].plot(t_orig_after, acc_orig, 'gray', linestyle='--', linewidth=1.5, alpha=0.5)
+
+        axs[i].axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.7, linewidth=2)
+        axs[i].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+        axs[i].set_ylabel(name, fontsize=10)
+        axs[i].grid(True, alpha=0.3)
+
+        if i == 0:
+            axs[i].axhline(y=x_new_target, color='green', linestyle='--', alpha=0.5)
+            axs[i].axhline(y=15, color='gray', linestyle=':', alpha=0.3)
+            axs[i].scatter([0, t_interrupt, t_interrupt + T2],
+                          [pos1[0], pos1[-1], pos2[-1]], color='red', s=60, zorder=5)
+            axs[i].annotate('INTERRUPT!', (t_interrupt, pos1[-1]),
+                           textcoords="offset points", xytext=(10, 10), fontsize=10,
+                           color='red', fontweight='bold')
+            axs[i].annotate(f'New target: {x_new_target}', (t_interrupt + T2, x_new_target),
+                           textcoords="offset points", xytext=(-80, 10), fontsize=9, color='green')
+            axs[i].annotate('Original: 15', (T1, 15),
+                           textcoords="offset points", xytext=(-60, -15), fontsize=8, color='gray')
+            axs[i].legend(loc='upper left', fontsize=8)
+        elif i < 4:
+            axs[i].annotate('Continuous!', (t_interrupt, d[len(t1)]),
+                           textcoords="offset points", xytext=(15, 5), fontsize=9,
+                           color='green', fontweight='bold')
+
+    axs[-1].set_xlabel('Time (s)', fontsize=11)
+    axs[-1].annotate('ALL derivatives → 0 smoothly!', (t_interrupt + T2 - 0.5, 0),
+                    textcoords="offset points", xytext=(-100, 20), fontsize=10,
+                    color='green', fontweight='bold')
+
+    plt.suptitle('Mid-Motion Redirect: S-curve Spatial Transformation\n'
+                 'x(t) = x_orig(t) + [x_new - x_orig_end] × β(s)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('/home/user/s-curve-beta/img/mid_motion_redirect.png', dpi=150, bbox_inches='tight')
+    print("\nSaved: img/mid_motion_redirect.png")
+    plt.close()
+
+
 if __name__ == '__main__':
     print("Generating plots for generalized S-curve motion...\n")
 
@@ -783,10 +1035,12 @@ if __name__ == '__main__':
 
     # New beta-blend approach plots
     print("\n" + "="*50)
-    print("NEW BETA-BLEND APPROACH")
+    print("NEW APPROACH: S-CURVE BLENDING")
     print("="*50 + "\n")
+    plot_blend_comparison()  # Compare both approaches
     plot_beta_blend_motion()
     plot_beta_blend_continuation()
     plot_beta_blend_reversal()
+    plot_mid_motion_redirect()
 
     print("\nAll plots generated successfully!")
