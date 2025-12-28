@@ -821,7 +821,7 @@ def plot_blend_comparison():
 
     # Two approaches
     modes = ['shift', 'blend']
-    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_inertial×(1-β) + x_new×β']
+    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β) + x_new×β']
     colors = ['blue', 'green']
 
     for col, (mode, title, color) in enumerate(zip(modes, titles, colors)):

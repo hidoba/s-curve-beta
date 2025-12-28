@@ -1456,10 +1456,12 @@ class BetaBlendMotion:
         """
         Compute the k-th derivative of position at time t ANALYTICALLY.
 
-        x(t) = x_inertial(t) * (1-β(s)) + x_new(t) * β(s)
-             = x_inertial(t) + (x_new(t) - x_inertial(t)) * β(s)
-             = x_inertial(t) + Δx(t) * β(s)
+        TWO MODES:
 
+        Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] × β(s)
+        Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
+
+        Both use x_orig (original S-curve continuation), NOT Taylor series!
         Uses the generalized Leibniz rule for derivatives of products.
         """
         t = np.asarray(t, dtype=float)
@@ -1477,25 +1479,83 @@ class BetaBlendMotion:
         beta_derivs = [bd / (T ** k) if T > 0 else (bd if k == 0 else np.zeros_like(t))
                        for k, bd in enumerate(beta_derivs_s)]
 
-        # Get inertial trajectory derivatives (matches initial state perfectly)
-        inertial_derivs = self._get_inertial_derivatives(t, order)
+        # Get original S-curve derivatives (continuation of original motion)
+        orig_derivs = self._get_orig_curve_derivatives(t, order)
 
-        # Get new S-curve derivatives
-        new_derivs = self._get_new_curve_derivatives(t, order)
+        if self.mode == 'shift':
+            # Space Shift: x(t) = x_orig(t) + shift × β(s)
+            # where shift = x_target - x_orig_end (constant)
+            shift = self.x_target - self.x_orig_end
 
-        # Δx^(k) = x_new^(k) - x_inertial^(k)
-        delta_derivs = [new_derivs[k] - inertial_derivs[k] for k in range(order + 1)]
+            # x^(n) = x_orig^(n) + shift × β^(n)
+            # (shift is constant, so its derivatives are 0)
+            result = orig_derivs[order] + shift * beta_derivs[order]
 
-        # Use Leibniz rule: (Δx * β)^(n) = Σ C(n,k) * Δx^(k) * β^(n-k)
-        from math import comb
-        product_deriv = np.zeros_like(t)
-        for k in range(order + 1):
-            product_deriv += comb(order, k) * delta_derivs[k] * beta_derivs[order - k]
+        else:  # mode == 'blend'
+            # Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
+            #            = x_orig(t) + (x_new(t) - x_orig(t)) × β
+            #            = x_orig(t) + Δx(t) × β
 
-        # x^(n) = x_inertial^(n) + (Δx * β)^(n)
-        result = inertial_derivs[order] + product_deriv
+            # Get new S-curve derivatives
+            new_derivs = self._get_new_curve_derivatives(t, order)
+
+            # Δx^(k) = x_new^(k) - x_orig^(k)
+            delta_derivs = [new_derivs[k] - orig_derivs[k] for k in range(order + 1)]
+
+            # Use Leibniz rule: (Δx × β)^(n) = Σ C(n,k) × Δx^(k) × β^(n-k)
+            from math import comb
+            product_deriv = np.zeros_like(t)
+            for k in range(order + 1):
+                product_deriv += comb(order, k) * delta_derivs[k] * beta_derivs[order - k]
+
+            # x^(n) = x_orig^(n) + (Δx × β)^(n)
+            result = orig_derivs[order] + product_deriv
 
         return float(result[0]) if scalar else result
+
+    def _get_orig_curve_derivatives(self, t, max_order=8):
+        """
+        Compute x_orig(t) and its derivatives - continuation of original S-curve.
+
+        x_orig continues the original S-curve with the SAME time scaling.
+        This preserves exact velocity/acceleration at t=0.
+
+        τ(t) = τ_current + original_tau_dot × t
+        where original_tau_dot is the tau rate from the original motion.
+        """
+        t = np.asarray(t, dtype=float)
+
+        if self.original_plan is None:
+            # Fallback: use inertial if no original plan
+            return self._get_inertial_derivatives(t, max_order)
+
+        plan = self.original_plan
+        tau_start = plan['tau_start']
+        tau_end = plan['tau_end']
+        original_T = plan['T']
+
+        # Use ORIGINAL motion's tau_dot to preserve velocity at t=0
+        original_tau_dot = (tau_end - tau_start) / original_T if original_T > 0 else 0
+
+        # τ(t) = τ_current + original_tau_dot × t
+        tau = self.tau_current + original_tau_dot * t
+        tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
+
+        # Scaling factor for position
+        f_start = normalized_f(tau_start)
+        delta_f = normalized_f(tau_end) - f_start
+        S = (plan['x1'] - plan['x0']) / delta_f if abs(delta_f) > 1e-10 else 0
+        offset = plan['x0'] - S * f_start
+
+        # Get f and all its derivatives at τ
+        f_derivs = normalized_f_derivatives(tau, max_order)
+
+        # x_orig^(k) = S × f^(k)(τ) × τ_dot^k
+        derivs = []
+        for k in range(max_order + 1):
+            derivs.append(S * f_derivs[k] * (original_tau_dot ** k) + (offset if k == 0 else 0))
+
+        return derivs
 
     def _get_inertial_derivatives(self, t, max_order=8):
         """
