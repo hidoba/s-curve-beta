@@ -1234,16 +1234,18 @@ class BetaBlendMotion:
         """
         Compute the k-th derivative of position at time t.
 
-        Uses τ-normalized formulation to prevent T^n blowup:
-        x(t) = x0 + (x_target - x0) * β(τ) + v0*T * φ₁(τ) + 0.5*a0*T² * φ₂(τ) + ...
+        Simple τ-normalized formulation that matches position and velocity only:
+        x(t) = x0 + (x_target - x0) * β(τ) + v0*T * φ₁(τ)
 
         where:
         - τ = t/T ∈ [0,1]
-        - φ₁(τ) = τ*(1-β(τ)) matches velocity at τ=0
-        - φ₂(τ) = τ²*(1-β(τ))² matches acceleration at τ=0
-        """
-        from math import factorial
+        - φ₁(τ) = τ*(1-β(τ)) matches velocity at τ=0, goes to 0 at τ=1
 
+        This avoids the T² blowup from acceleration matching while ensuring:
+        - x(0) = x0, x(T) = x_target
+        - v(0) = v0, v(T) = 0
+        - Smooth S-curve transition
+        """
         t = np.asarray(t, dtype=float)
         scalar = t.ndim == 0
         t = np.atleast_1d(t)
@@ -1253,8 +1255,8 @@ class BetaBlendMotion:
         k = order
         tau = t / T
 
-        # Get β and its derivatives w.r.t. τ (up to order k)
-        beta_derivs = _beta_s_derivatives(tau, max_order=k)
+        # Get β and its derivatives w.r.t. τ
+        beta_derivs = _beta_s_derivatives(tau, max_order=max(k, 1))
         beta = beta_derivs[0]
         one_minus_beta = 1 - beta
 
@@ -1262,62 +1264,28 @@ class BetaBlendMotion:
         dx_target = self.x_target - self.x0
 
         if k == 0:
-            # x(t) = x0 + Δx*β + v0*T*τ*(1-β) + 0.5*a0*T²*τ²*(1-β)² + ...
-            result = self.x0 + dx_target * beta
-            result += self.v0 * T * tau * one_minus_beta
-            result += 0.5 * self.a0 * T**2 * tau**2 * one_minus_beta**2
-            result += (1/6) * self.j0 * T**3 * tau**3 * one_minus_beta**3
+            # x(t) = x0 + Δx*β + v0*T*τ*(1-β)
+            result = self.x0 + dx_target * beta + self.v0 * T * tau * one_minus_beta
+        elif k == 1:
+            # v(t) = Δx*β'/T + v0*[(1-β) - τ*β']
+            beta_prime = beta_derivs[1]
+            result = dx_target * beta_prime / T + self.v0 * (one_minus_beta - tau * beta_prime)
+        elif k == 2:
+            # a(t) = Δx*β''/T² + v0*[-2β'/T - τ*β''/T]
+            beta_prime = beta_derivs[1]
+            beta_double_prime = beta_derivs[2] if len(beta_derivs) > 2 else np.zeros_like(tau)
+            result = dx_target * beta_double_prime / (T**2)
+            result += self.v0 * (-2 * beta_prime / T - tau * beta_double_prime / T)
         else:
-            # Use Leibniz rule for derivatives
-            # For the β term: d^k/dt^k[β(τ)] = β^(k)(τ) / T^k
-            result = dx_target * beta_derivs[k] / (T ** k) if k <= len(beta_derivs) - 1 else np.zeros_like(t)
-
-            # For the v0*T*φ₁ term where φ₁ = τ*(1-β)
-            # d^k/dt^k[T*φ₁(τ)] = T * φ₁^(k)(τ) / T^k = φ₁^(k)(τ) / T^(k-1)
-            phi1_k = self._phi_deriv(tau, 1, k, beta_derivs)
-            result += self.v0 * T * phi1_k / (T ** k)
-
-            # For the 0.5*a0*T²*φ₂ term where φ₂ = τ²*(1-β)²
-            phi2_k = self._phi_deriv(tau, 2, k, beta_derivs)
-            result += 0.5 * self.a0 * T**2 * phi2_k / (T ** k)
-
-            # For the (1/6)*j0*T³*φ₃ term where φ₃ = τ³*(1-β)³
-            phi3_k = self._phi_deriv(tau, 3, k, beta_derivs)
-            result += (1/6) * self.j0 * T**3 * phi3_k / (T ** k)
+            # Higher derivatives via numerical differentiation
+            eps = 1e-5 * T
+            t_p = np.clip(t + eps, 0, T)
+            t_m = np.clip(t - eps, 0, T)
+            deriv_p = self._eval_derivative(t_p, k - 1)
+            deriv_m = self._eval_derivative(t_m, k - 1)
+            result = (deriv_p - deriv_m) / (2 * eps)
 
         return float(result[0]) if scalar else result
-
-    def _phi_deriv(self, tau, n, k, beta_derivs):
-        """
-        Compute k-th derivative of φₙ(τ) = τⁿ * (1-β(τ))ⁿ w.r.t. τ.
-
-        Uses numerical differentiation for simplicity and robustness.
-        """
-        tau = np.asarray(tau, dtype=float)
-
-        if k == 0:
-            beta = beta_derivs[0]
-            return np.power(tau, n) * np.power(np.maximum(1 - beta, 0), n)
-
-        # Numerical differentiation
-        eps = 1e-6
-        if k == 1:
-            tau_p = np.clip(tau + eps, 0, 1)
-            tau_m = np.clip(tau - eps, 0, 1)
-            beta_p = _beta_s(tau_p)
-            beta_m = _beta_s(tau_m)
-            phi_p = np.power(tau_p, n) * np.power(np.maximum(1 - beta_p, 0), n)
-            phi_m = np.power(tau_m, n) * np.power(np.maximum(1 - beta_m, 0), n)
-            return (phi_p - phi_m) / (tau_p - tau_m + 1e-15)
-        else:
-            # Higher derivatives via central difference on lower derivative
-            tau_p = np.clip(tau + eps, 0, 1)
-            tau_m = np.clip(tau - eps, 0, 1)
-            beta_p = _beta_s_derivatives(tau_p, max_order=k-1)
-            beta_m = _beta_s_derivatives(tau_m, max_order=k-1)
-            dphi_p = self._phi_deriv(tau_p, n, k-1, beta_p)
-            dphi_m = self._phi_deriv(tau_m, n, k-1, beta_m)
-            return (dphi_p - dphi_m) / (tau_p - tau_m + 1e-15)
 
     def position(self, t):
         """Get position at time t."""
