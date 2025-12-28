@@ -1014,8 +1014,8 @@ def plot_mid_motion_redirect():
                     textcoords="offset points", xytext=(-100, 20), fontsize=10,
                     color='green', fontweight='bold')
 
-    plt.suptitle('Mid-Motion Redirect: S-curve Spatial Transformation\n'
-                 'x(t) = x_orig(t) + [x_new - x_orig_end] × β(s)',
+    plt.suptitle('Mid-Motion Redirect: S-curve Curve Blend\n'
+                 'x(t) = x_inertial(t)×(1-β) + x_new(t)×β',
                  fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('/home/user/s-curve-beta/img/mid_motion_redirect.png', dpi=150, bbox_inches='tight')
