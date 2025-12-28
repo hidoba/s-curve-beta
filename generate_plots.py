@@ -777,7 +777,9 @@ def plot_blend_comparison():
     1. Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] * β(s)
     2. Curve Blend: x(t) = x_orig(t) * (1-β) + x_new(t) * β
     """
-    fig, axs = plt.subplots(4, 2, figsize=(14, 14))
+    from scurvebeta.generalized import normalized_f_derivatives
+
+    fig, axs = plt.subplots(6, 2, figsize=(14, 18))
 
     robotVmax, robotAmax = 6, 3
 
@@ -803,9 +805,23 @@ def plot_blend_comparison():
     t1 = np.linspace(0, t_interrupt, 100)
     pos1, vel1, acc1 = evaluate_motion(plan1, t1)
 
+    # Compute motion1 higher derivatives ANALYTICALLY
+    tau_start = plan1['tau_start']
+    tau_end = plan1['tau_end']
+    delta_tau = tau_end - tau_start
+    delta_x = plan1['x1'] - plan1['x0']
+    S = delta_x / 1.0  # delta_f = 1
+    tau_dot = delta_tau / T1
+    tau1 = tau_start + delta_tau * (t1 / T1)
+    f_derivs1 = normalized_f_derivatives(tau1, max_order=5)
+
+    jerk1 = S * f_derivs1[3] * (tau_dot ** 3)
+    snap1 = S * f_derivs1[4] * (tau_dot ** 4)
+    crackle1 = S * f_derivs1[5] * (tau_dot ** 5)
+
     # Two approaches
     modes = ['shift', 'blend']
-    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β) + x_new×β']
+    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_inertial×(1-β) + x_new×β']
     colors = ['blue', 'green']
 
     for col, (mode, title, color) in enumerate(zip(modes, titles, colors)):
@@ -819,27 +835,28 @@ def plot_blend_comparison():
         print(f"  Duration: T={T2:.3f}s")
         print(f"  v(0)={motion2.velocity(0):.4f}, v(T)={motion2.velocity(T2):.6f}")
         print(f"  a(0)={motion2.acceleration(0):.4f}, a(T)={motion2.acceleration(T2):.6f}")
+        print(f"  snap(0)={motion2.snap(0):.4f}")
 
         t2 = np.linspace(0, T2, 150)
         pos2 = motion2.position(t2)
         vel2 = motion2.velocity(t2)
         acc2 = motion2.acceleration(t2)
         jerk2 = motion2.jerk(t2)
+        snap2 = motion2.snap(t2)
+        crackle2 = motion2.crackle(t2)
 
         # Combined
         t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
         pos_combined = np.concatenate([pos1, pos2[1:]])
         vel_combined = np.concatenate([vel1, vel2[1:]])
         acc_combined = np.concatenate([acc1, acc2[1:]])
-
-        # Jerk for motion 1
-        dt1 = t1[1] - t1[0]
-        jerk1 = np.gradient(acc1, dt1)
         jerk_combined = np.concatenate([jerk1, jerk2[1:]])
+        snap_combined = np.concatenate([snap1, snap2[1:]])
+        crackle_combined = np.concatenate([crackle1, crackle2[1:]])
 
         # Plot
-        data = [pos_combined, vel_combined, acc_combined, jerk_combined]
-        names = ['Position', 'Velocity', 'Acceleration', 'Jerk']
+        data = [pos_combined, vel_combined, acc_combined, jerk_combined, snap_combined, crackle_combined]
+        names = ['Position', 'Velocity', 'Acceleration', 'Jerk', 'Snap (4th)', 'Crackle (5th)']
 
         for row, (d, name) in enumerate(zip(data, names)):
             ax = axs[row, col]
