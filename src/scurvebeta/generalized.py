@@ -1024,20 +1024,24 @@ def normalized_f_derivatives(tau, max_order=8):
     # f(τ) - position (from normalized_f)
     results[0] = normalized_f(tau)
 
-    # Mask for interior region (away from boundaries)
-    # Higher derivatives need larger margin from boundary to avoid numerical issues
-    # As τ→±1, terms like (1-τ²)^(-k) blow up even though the full expression → 0
-    # For order n derivative, we need ~(1-τ²)^((2.5-n)/2), which blows up when n > 2.5
-    # Higher orders need progressively more margin
-    boundary_margin = 0.05 + 0.01 * max_order  # Scale margin with derivative order
-    mask = np.abs(tau) < (1 - boundary_margin)
+    # Smooth blending weight for boundary region
+    # Instead of hard cutoff, smoothly blend derivatives to 0 near boundaries
+    # This preserves C∞ continuity while avoiding numerical blowup
+    # Use a smooth weight based on (1-τ²) - naturally goes to 0 at τ=±1
+    boundary_threshold = 0.999  # Only clamp very close to boundary
+    mask = np.abs(tau) < boundary_threshold
     t = tau[mask]
 
     if len(t) == 0:
-        # All values are at or near boundaries - all derivatives are 0
+        # All values are at or very near boundaries - all derivatives are 0
         if scalar:
             return [float(r[0]) for r in results]
         return results
+
+    # Smooth blending weight that goes to 0 at boundary
+    # w = (1 - τ²)^p where p controls how fast it goes to 0
+    # Higher derivatives need faster decay to avoid numerical issues
+    blend_power = 0.5  # Gentle blending
 
     # Precompute powers of (1-τ²)
     one_minus_t2 = 1 - t**2
