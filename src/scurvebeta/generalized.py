@@ -1239,11 +1239,24 @@ class BetaBlendMotion:
             self.original_T = T
             self.T_remaining_orig = T
 
-        # Set initial T
-        self.T = max(T, 0.01)
+        # Compute T_new: optimal duration for new S-curve to reach target
+        # This is based on distance and constraints (like plan_motion does)
+        delta_x_new = abs(x_target - x0)
+        if delta_x_new > 1e-10:
+            T_vmax = 2 * delta_x_new / self.robotVmax if self.robotVmax < float('inf') else 1.0
+            T_amax = 2 * sqrt(delta_x_new / self.robotAmax) if self.robotAmax < float('inf') else T_vmax
+            self.T_new = max(T_vmax, T_amax, 0.5)
+        else:
+            self.T_new = 0.5  # Minimum duration
 
-        # Find optimal T that respects constraints
-        self.T = self._find_optimal_T(self.T)
+        if mode == 'blend':
+            # For two-beta blend: T is simply the max of the two independent durations
+            # No optimization needed since each curve has its natural timing
+            self.T = max(self.T_remaining_orig, self.T_new)
+        else:
+            # For shift mode: use the optimization approach
+            self.T = max(T if T is not None else 0, self.T_remaining_orig, self.T_new, 0.01)
+            self.T = self._find_optimal_T(self.T)
 
     def _find_optimal_T(self, T_initial):
         """Find optimal T that respects velocity constraints."""
@@ -1428,18 +1441,23 @@ class BetaBlendMotion:
         Compute x_new(t) and its derivatives ANALYTICALLY.
 
         x_new is a rest-to-rest S-curve from x0 to x_target.
-        τ(t) = -1 + 2*t/T, so dτ/dt = 2/T (constant)
+        For blend mode: uses T_new as duration (its natural time scale)
+        For shift mode: uses T as duration
+
+        After T_new, x_new stays at x_target with all derivatives = 0.
         """
         t = np.asarray(t, dtype=float)
-        T = self.T
 
-        # τ(t) = -1 + 2*t/T
-        tau = -1 + 2 * (t / T)
+        # Use T_new for blend mode, T for shift mode
+        T_curve = self.T_new if self.mode == 'blend' else self.T
+
+        # τ(t) = -1 + 2*t/T_curve, clamped to [-1, 1]
+        tau = -1 + 2 * (t / T_curve) if T_curve > 0 else np.ones_like(t)
         tau = np.clip(tau, -1, 1)
 
-        tau_dot = 2 / T if T > 0 else 0
+        tau_dot = 2 / T_curve if T_curve > 0 else 0
 
-        # For rest-to-rest: S = (x_target - x0) / 1.0 = x_target - x0
+        # For rest-to-rest: S = x_target - x0
         S = self.x_target - self.x0
 
         # Get f and all its derivatives at τ
@@ -1448,7 +1466,15 @@ class BetaBlendMotion:
         # x_new^(k) = S * f^(k)(τ) * τ_dot^k + (x0 if k==0 else 0)
         derivs = []
         for k in range(max_order + 1):
-            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (self.x0 if k == 0 else 0))
+            val = S * f_derivs[k] * (tau_dot ** k) + (self.x0 if k == 0 else 0)
+            # After T_new, x_new = x_target with all derivatives = 0
+            if self.mode == 'blend':
+                past_T_new = t > T_curve
+                if k == 0:
+                    val = np.where(past_T_new, self.x_target, val)
+                else:
+                    val = np.where(past_T_new, 0.0, val)
+            derivs.append(val)
 
         return derivs
 
@@ -1459,9 +1485,13 @@ class BetaBlendMotion:
         TWO MODES:
 
         Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] × β(s)
-        Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
+            - Single β over duration T
 
-        Both use x_orig (original S-curve continuation), NOT Taylor series!
+        Curve Blend: x(t) = x_orig(t) × (1-β₁) + x_new(t) × β₂
+            - β₁ goes 0→1 over T_orig_remaining (fades OUT x_orig)
+            - β₂ goes 0→1 over T_new (fades IN x_new)
+            - Different time scales prevent derivative explosion!
+
         Uses the generalized Leibniz rule for derivatives of products.
         """
         t = np.asarray(t, dtype=float)
@@ -1469,47 +1499,71 @@ class BetaBlendMotion:
         t = np.atleast_1d(t)
         t = np.clip(t, 0, self.T)
 
-        T = self.T
-        s = t / T
-
-        # Get β(s) and all its derivatives w.r.t. s
-        beta_derivs_s = _beta_s_derivatives(s, max_order=order)
-
-        # Convert to derivatives w.r.t. t: β^(k)_t = β^(k)_s / T^k
-        beta_derivs = [bd / (T ** k) if T > 0 else (bd if k == 0 else np.zeros_like(t))
-                       for k, bd in enumerate(beta_derivs_s)]
-
-        # Get original S-curve derivatives (continuation of original motion)
-        orig_derivs = self._get_orig_curve_derivatives(t, order)
-
         if self.mode == 'shift':
             # Space Shift: x(t) = x_orig(t) + shift × β(s)
-            # where shift = x_target - x_orig_end (constant)
-            shift = self.x_target - self.x_orig_end
+            T = self.T
+            s = t / T
+            beta_derivs_s = _beta_s_derivatives(s, max_order=order)
+            beta_derivs = [bd / (T ** k) if T > 0 else (bd if k == 0 else np.zeros_like(t))
+                           for k, bd in enumerate(beta_derivs_s)]
 
-            # x^(n) = x_orig^(n) + shift × β^(n)
-            # (shift is constant, so its derivatives are 0)
+            orig_derivs = self._get_orig_curve_derivatives(t, order)
+            shift = self.x_target - self.x_orig_end
             result = orig_derivs[order] + shift * beta_derivs[order]
 
         else:  # mode == 'blend'
-            # Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
-            #            = x_orig(t) + (x_new(t) - x_orig(t)) × β
-            #            = x_orig(t) + Δx(t) × β
+            # Curve Blend with TWO separate betas:
+            # x(t) = x_orig(t) × (1-β₁) + x_new(t) × β₂
 
-            # Get new S-curve derivatives
+            # β₁: fades out x_orig over T_orig_remaining
+            T1 = self.T_remaining_orig
+            s1 = np.clip(t / T1, 0, 1) if T1 > 0 else np.ones_like(t)
+            beta1_derivs_s = _beta_s_derivatives(s1, max_order=order)
+            beta1_derivs = [bd / (T1 ** k) if T1 > 0 else (bd if k == 0 else np.zeros_like(t))
+                            for k, bd in enumerate(beta1_derivs_s)]
+            # For t > T1, β₁ = 1, all derivatives = 0
+            past_T1 = t > T1
+            for k in range(len(beta1_derivs)):
+                if k == 0:
+                    beta1_derivs[k] = np.where(past_T1, 1.0, beta1_derivs[k])
+                else:
+                    beta1_derivs[k] = np.where(past_T1, 0.0, beta1_derivs[k])
+
+            # β₂: fades in x_new over T_new
+            T2 = self.T_new
+            s2 = np.clip(t / T2, 0, 1) if T2 > 0 else np.ones_like(t)
+            beta2_derivs_s = _beta_s_derivatives(s2, max_order=order)
+            beta2_derivs = [bd / (T2 ** k) if T2 > 0 else (bd if k == 0 else np.zeros_like(t))
+                            for k, bd in enumerate(beta2_derivs_s)]
+            # For t > T2, β₂ = 1, all derivatives = 0
+            past_T2 = t > T2
+            for k in range(len(beta2_derivs)):
+                if k == 0:
+                    beta2_derivs[k] = np.where(past_T2, 1.0, beta2_derivs[k])
+                else:
+                    beta2_derivs[k] = np.where(past_T2, 0.0, beta2_derivs[k])
+
+            # Get curve derivatives
+            orig_derivs = self._get_orig_curve_derivatives(t, order)
             new_derivs = self._get_new_curve_derivatives(t, order)
 
-            # Δx^(k) = x_new^(k) - x_orig^(k)
-            delta_derivs = [new_derivs[k] - orig_derivs[k] for k in range(order + 1)]
+            # (1-β₁) derivatives: d^n/dt^n (1-β₁) = -β₁^(n) for n≥1
+            one_minus_beta1 = [1 - beta1_derivs[0]] + [-beta1_derivs[k] for k in range(1, order + 1)]
 
-            # Use Leibniz rule: (Δx × β)^(n) = Σ C(n,k) × Δx^(k) × β^(n-k)
+            # Use Leibniz rule for both products
             from math import comb
-            product_deriv = np.zeros_like(t)
-            for k in range(order + 1):
-                product_deriv += comb(order, k) * delta_derivs[k] * beta_derivs[order - k]
 
-            # x^(n) = x_orig^(n) + (Δx × β)^(n)
-            result = orig_derivs[order] + product_deriv
+            # Term 1: x_orig × (1-β₁)
+            term1 = np.zeros_like(t)
+            for k in range(order + 1):
+                term1 += comb(order, k) * orig_derivs[k] * one_minus_beta1[order - k]
+
+            # Term 2: x_new × β₂
+            term2 = np.zeros_like(t)
+            for k in range(order + 1):
+                term2 += comb(order, k) * new_derivs[k] * beta2_derivs[order - k]
+
+            result = term1 + term2
 
         return float(result[0]) if scalar else result
 
