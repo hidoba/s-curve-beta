@@ -847,6 +847,31 @@ def plot_blend_comparison():
     new_derivs = motion2._get_new_curve_derivatives(t2, max_order=0)
     x_new = new_derivs[0]
 
+    # Create hypothetical "redirect" S-curve: x_orig_end → x_target (rest-to-rest)
+    # This shows what a clean S-curve from 15 → 5 would look like
+    x_orig_end = motion2.x_orig_end
+    plan_redirect = plan_motion(x_orig_end, x_new_target, v0=0, v1=0,
+                                robotVmax=robotVmax, robotAmax=robotAmax)
+    T_redirect = plan_redirect['T']
+
+    # Evaluate redirect motion over T2 (stretch/compress to match blend duration)
+    t_redirect = np.linspace(0, T_redirect, 150)
+    pos_redirect, vel_redirect, acc_redirect = evaluate_motion(plan_redirect, t_redirect)
+
+    # Compute higher derivatives for redirect motion
+    tau_start_r = plan_redirect['tau_start']
+    tau_end_r = plan_redirect['tau_end']
+    delta_tau_r = tau_end_r - tau_start_r
+    delta_x_r = plan_redirect['x1'] - plan_redirect['x0']
+    S_r = delta_x_r / 1.0  # delta_f = 1
+    tau_dot_r = delta_tau_r / T_redirect
+    tau_r = tau_start_r + delta_tau_r * (t_redirect / T_redirect)
+    f_derivs_r = normalized_f_derivatives(tau_r, max_order=5)
+
+    jerk_redirect = S_r * f_derivs_r[3] * (tau_dot_r ** 3)
+    snap_redirect = S_r * f_derivs_r[4] * (tau_dot_r ** 4)
+    crackle_redirect = S_r * f_derivs_r[5] * (tau_dot_r ** 5)
+
     # Combined timeline
     t_combined = np.concatenate([t1, t_interrupt + t2[1:]])
     pos_combined = np.concatenate([pos1, pos2[1:]])
@@ -858,16 +883,21 @@ def plot_blend_comparison():
 
     # Plot derivatives
     data = [pos_combined, vel_combined, acc_combined, jerk_combined, snap_combined, crackle_combined]
+    redirect_data = [pos_redirect, vel_redirect, acc_redirect, jerk_redirect, snap_redirect, crackle_redirect]
     names = ['Position', 'Velocity', 'Acceleration', 'Jerk', 'Snap (4th)', 'Crackle (5th)']
     color = 'green'
 
-    for row, (d, name) in enumerate(zip(data, names)):
+    for row, (d, name, d_redirect) in enumerate(zip(data, names, redirect_data)):
         ax = axs[row]
-        ax.plot(t_combined, d, color=color, linewidth=2, label='x(t)')
+        ax.plot(t_combined, d, color=color, linewidth=2, label='x(t) blended')
         ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
         ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
         ax.set_ylabel(name)
         ax.grid(True, alpha=0.3)
+
+        # Plot redirect S-curve (x_orig_end → x_target) in cyan dashed
+        ax.plot(t_interrupt + t_redirect, d_redirect, 'cyan', linestyle='--', linewidth=1.5,
+               alpha=0.8, label=f'x_redirect ({x_orig_end:.0f}→{x_new_target})')
 
         if row == 0:
             ax.set_title('Curve Blend: x(t) = x_orig×(1-β) + x_new×β', fontsize=11)
@@ -879,7 +909,7 @@ def plot_blend_comparison():
             ax.axhline(y=x_new_target, color='green', linestyle=':', alpha=0.5)
             ax.scatter([0, t_interrupt, t_interrupt + T2],
                       [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
-            ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right', fontsize=8)
 
     # Plot beta functions (row 6)
     ax = axs[6]
