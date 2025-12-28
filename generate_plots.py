@@ -822,7 +822,7 @@ def plot_blend_comparison():
 
     # Two approaches
     modes = ['shift', 'blend']
-    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β₁) + x_new×β₂']
+    titles = ['Space Shift: x_orig + shift×β', 'Curve Blend: x_orig×(1-β) + x_new×β']
     colors = ['blue', 'green']
 
     for col, (mode, title, color) in enumerate(zip(modes, titles, colors)):
@@ -875,11 +875,13 @@ def plot_blend_comparison():
 
             if row == 0:
                 ax.set_title(title, fontsize=11)
-                # Add dashed lines for x_orig and x_new
+                # Add dashed lines for component curves
                 ax.plot(t_interrupt + t2, x_orig, 'purple', linestyle='--', linewidth=1.5,
                        alpha=0.7, label='x_orig')
-                ax.plot(t_interrupt + t2, x_new, 'orange', linestyle='--', linewidth=1.5,
-                       alpha=0.7, label='x_new')
+                if mode == 'blend':
+                    # Only show x_new for Curve Blend (Space Shift doesn't use it)
+                    ax.plot(t_interrupt + t2, x_new, 'orange', linestyle='--', linewidth=1.5,
+                           alpha=0.7, label='x_new')
                 ax.axhline(y=x_new_target, color='green', linestyle=':', alpha=0.5)
                 ax.scatter([0, t_interrupt, t_interrupt + T2],
                           [pos1[0], pos1[-1], pos2[-1]], color='red', s=50, zorder=5)
@@ -892,44 +894,15 @@ def plot_blend_comparison():
         # Full timeline matching other plots
         t_full = np.concatenate([t1, t_interrupt + t2_extended])
 
-        if mode == 'shift':
-            # Single β over duration T (0 before interrupt)
-            s = t2_extended / T2
-            beta = _beta_s(s)
-            beta_full = np.concatenate([np.zeros_like(t1), beta])
-            ax.plot(t_full, beta_full, color='purple', linewidth=2, label='β')
-            ax.set_ylabel('β' if col == 0 else '')
-        else:
-            # Two betas: β₁ over T_remaining_orig, β₂ over T_new
-            T1_rem = motion2.T_remaining_orig
-            T_new = motion2.T_new
+        # Both modes now use single β over duration T
+        s = t2_extended / T2
+        beta = _beta_s(s)
+        beta_full = np.concatenate([np.zeros_like(t1), beta])
 
-            # β₁: fades out x_orig
-            s1 = np.clip(t2_extended / T1_rem, 0, 1)
-            beta1 = _beta_s(s1)
-            beta1 = np.where(t2_extended > T1_rem, 1.0, beta1)
-
-            # β₂: fades in x_new
-            s2 = np.clip(t2_extended / T_new, 0, 1)
-            beta2 = _beta_s(s2)
-            beta2 = np.where(t2_extended > T_new, 1.0, beta2)
-
-            # Full timeline (0 before interrupt)
-            beta1_full = np.concatenate([np.zeros_like(t1), beta1])
-            beta2_full = np.concatenate([np.zeros_like(t1), beta2])
-
-            ax.plot(t_full, beta1_full, color='purple', linewidth=2, label='β₁ (fades out x_orig)')
-            ax.plot(t_full, beta2_full, color='orange', linewidth=2, label='β₂ (fades in x_new)')
-            ax.plot(t_full, 1 - beta1_full, color='purple', linewidth=1.5,
-                   linestyle='--', alpha=0.5, label='1-β₁')
-
-            # Mark T_new if different from T
-            if T_new < T2 - 0.1:
-                ax.axvline(x=t_interrupt + T_new, color='orange', linestyle=':', alpha=0.7)
-                ax.annotate(f'T_new={T_new:.2f}s', (t_interrupt + T_new, 0.5),
-                           textcoords="offset points", xytext=(5, 0), fontsize=8, color='orange')
-
-            ax.set_ylabel('β₁, β₂' if col == 0 else '')
+        ax.plot(t_full, beta_full, color='purple', linewidth=2, label='β')
+        ax.plot(t_full, 1 - beta_full, color='purple', linewidth=1.5,
+               linestyle='--', alpha=0.5, label='1-β')
+        ax.set_ylabel('β' if col == 0 else '')
 
         ax.axvline(x=t_interrupt, color='r', linestyle='--', alpha=0.5)
         ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3)

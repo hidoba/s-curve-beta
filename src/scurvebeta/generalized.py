@@ -1250,9 +1250,12 @@ class BetaBlendMotion:
             self.T_new = 0.5  # Minimum duration
 
         if mode == 'blend':
-            # For two-beta blend: T is simply the max of the two independent durations
-            # No optimization needed since each curve has its natural timing
+            # For curve blend: both betas use the SAME T
+            # T must be >= both T_remaining_orig (so x_orig finishes) and T_new (so x_new finishes)
+            # We stretch whichever curve is shorter to match the longer one
             self.T = max(self.T_remaining_orig, self.T_new)
+            # Apply optimization to respect velocity constraints
+            self.T = self._find_optimal_T(self.T)
         else:
             # For shift mode: use the optimization approach
             self.T = max(T if T is not None else 0, self.T_remaining_orig, self.T_new, 0.01)
@@ -1440,16 +1443,13 @@ class BetaBlendMotion:
         """
         Compute x_new(t) and its derivatives ANALYTICALLY.
 
-        x_new is a rest-to-rest S-curve from x0 to x_target.
-        For blend mode: uses T_new as duration (its natural time scale)
-        For shift mode: uses T as duration
-
-        After T_new, x_new stays at x_target with all derivatives = 0.
+        x_new is a rest-to-rest S-curve from x0 to x_target over duration T.
+        Both blend and shift modes use T as duration so curves align.
         """
         t = np.asarray(t, dtype=float)
 
-        # Use T_new for blend mode, T for shift mode
-        T_curve = self.T_new if self.mode == 'blend' else self.T
+        # Both modes use T as duration
+        T_curve = self.T
 
         # τ(t) = -1 + 2*t/T_curve, clamped to [-1, 1]
         tau = -1 + 2 * (t / T_curve) if T_curve > 0 else np.ones_like(t)
@@ -1466,15 +1466,7 @@ class BetaBlendMotion:
         # x_new^(k) = S * f^(k)(τ) * τ_dot^k + (x0 if k==0 else 0)
         derivs = []
         for k in range(max_order + 1):
-            val = S * f_derivs[k] * (tau_dot ** k) + (self.x0 if k == 0 else 0)
-            # After T_new, x_new = x_target with all derivatives = 0
-            if self.mode == 'blend':
-                past_T_new = t > T_curve
-                if k == 0:
-                    val = np.where(past_T_new, self.x_target, val)
-                else:
-                    val = np.where(past_T_new, 0.0, val)
-            derivs.append(val)
+            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (self.x0 if k == 0 else 0))
 
         return derivs
 
@@ -1486,11 +1478,12 @@ class BetaBlendMotion:
 
         Space Shift: x(t) = x_orig(t) + [x_target - x_orig_end] × β(s)
             - Single β over duration T
+            - x_orig continues its natural trajectory
 
-        Curve Blend: x(t) = x_orig(t) × (1-β₁) + x_new(t) × β₂
-            - β₁ goes 0→1 over T_orig_remaining (fades OUT x_orig)
-            - β₂ goes 0→1 over T_new (fades IN x_new)
-            - Different time scales prevent derivative explosion!
+        Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
+            - Single β over duration T (same for both curves)
+            - x_orig and x_new both stretched to duration T
+            - T is carefully chosen: max(T_remaining_orig, T_new)
 
         Uses the generalized Leibniz rule for derivatives of products.
         """
@@ -1512,56 +1505,35 @@ class BetaBlendMotion:
             result = orig_derivs[order] + shift * beta_derivs[order]
 
         else:  # mode == 'blend'
-            # Curve Blend with TWO separate betas:
-            # x(t) = x_orig(t) × (1-β₁) + x_new(t) × β₂
+            # Curve Blend: x(t) = x_orig(t) × (1-β) + x_new(t) × β
+            # BOTH use the SAME β over duration T (carefully chosen)
+            # x_orig and x_new are stretched/compressed to fit T
 
-            # β₁: fades out x_orig over T_orig_remaining
-            T1 = self.T_remaining_orig
-            s1 = np.clip(t / T1, 0, 1) if T1 > 0 else np.ones_like(t)
-            beta1_derivs_s = _beta_s_derivatives(s1, max_order=order)
-            beta1_derivs = [bd / (T1 ** k) if T1 > 0 else (bd if k == 0 else np.zeros_like(t))
-                            for k, bd in enumerate(beta1_derivs_s)]
-            # For t > T1, β₁ = 1, all derivatives = 0
-            past_T1 = t > T1
-            for k in range(len(beta1_derivs)):
-                if k == 0:
-                    beta1_derivs[k] = np.where(past_T1, 1.0, beta1_derivs[k])
-                else:
-                    beta1_derivs[k] = np.where(past_T1, 0.0, beta1_derivs[k])
+            T = self.T
+            s = t / T if T > 0 else np.ones_like(t)
+            beta_derivs_s = _beta_s_derivatives(s, max_order=order)
+            beta_derivs = [bd / (T ** k) if T > 0 else (bd if k == 0 else np.zeros_like(t))
+                           for k, bd in enumerate(beta_derivs_s)]
 
-            # β₂: fades in x_new over T_new
-            T2 = self.T_new
-            s2 = np.clip(t / T2, 0, 1) if T2 > 0 else np.ones_like(t)
-            beta2_derivs_s = _beta_s_derivatives(s2, max_order=order)
-            beta2_derivs = [bd / (T2 ** k) if T2 > 0 else (bd if k == 0 else np.zeros_like(t))
-                            for k, bd in enumerate(beta2_derivs_s)]
-            # For t > T2, β₂ = 1, all derivatives = 0
-            past_T2 = t > T2
-            for k in range(len(beta2_derivs)):
-                if k == 0:
-                    beta2_derivs[k] = np.where(past_T2, 1.0, beta2_derivs[k])
-                else:
-                    beta2_derivs[k] = np.where(past_T2, 0.0, beta2_derivs[k])
-
-            # Get curve derivatives
+            # Get curve derivatives (both stretched to duration T)
             orig_derivs = self._get_orig_curve_derivatives(t, order)
             new_derivs = self._get_new_curve_derivatives(t, order)
 
-            # (1-β₁) derivatives: d^n/dt^n (1-β₁) = -β₁^(n) for n≥1
-            one_minus_beta1 = [1 - beta1_derivs[0]] + [-beta1_derivs[k] for k in range(1, order + 1)]
+            # (1-β) derivatives: d^n/dt^n (1-β) = -β^(n) for n≥1
+            one_minus_beta = [1 - beta_derivs[0]] + [-beta_derivs[k] for k in range(1, order + 1)]
 
             # Use Leibniz rule for both products
             from math import comb
 
-            # Term 1: x_orig × (1-β₁)
+            # Term 1: x_orig × (1-β)
             term1 = np.zeros_like(t)
             for k in range(order + 1):
-                term1 += comb(order, k) * orig_derivs[k] * one_minus_beta1[order - k]
+                term1 += comb(order, k) * orig_derivs[k] * one_minus_beta[order - k]
 
-            # Term 2: x_new × β₂
+            # Term 2: x_new × β
             term2 = np.zeros_like(t)
             for k in range(order + 1):
-                term2 += comb(order, k) * new_derivs[k] * beta2_derivs[order - k]
+                term2 += comb(order, k) * new_derivs[k] * beta_derivs[order - k]
 
             result = term1 + term2
 
@@ -1571,11 +1543,10 @@ class BetaBlendMotion:
         """
         Compute x_orig(t) and its derivatives - continuation of original S-curve.
 
-        x_orig continues the original S-curve with the SAME time scaling.
-        This preserves exact velocity/acceleration at t=0.
+        For SHIFT mode: x_orig continues at its natural pace (preserves v0, a0 exactly)
+        For BLEND mode: x_orig is stretched to duration T (aligns with x_new and β)
 
-        τ(t) = τ_current + original_tau_dot × t
-        where original_tau_dot is the tau rate from the original motion.
+        τ(t) = τ_current + tau_dot × t
         """
         t = np.asarray(t, dtype=float)
 
@@ -1588,11 +1559,17 @@ class BetaBlendMotion:
         tau_end = plan['tau_end']
         original_T = plan['T']
 
-        # Use ORIGINAL motion's tau_dot to preserve velocity at t=0
-        original_tau_dot = (tau_end - tau_start) / original_T if original_T > 0 else 0
+        if self.mode == 'blend':
+            # BLEND mode: stretch x_orig to reach tau_end at t=T
+            # This aligns x_orig with x_new and β (all complete at T)
+            tau_remaining = tau_end - self.tau_current
+            tau_dot = tau_remaining / self.T if self.T > 0 else 0
+        else:
+            # SHIFT mode: use original tau_dot to preserve velocity at t=0
+            tau_dot = (tau_end - tau_start) / original_T if original_T > 0 else 0
 
-        # τ(t) = τ_current + original_tau_dot × t
-        tau = self.tau_current + original_tau_dot * t
+        # τ(t) = τ_current + tau_dot × t
+        tau = self.tau_current + tau_dot * t
         tau = np.clip(tau, min(tau_start, tau_end), max(tau_start, tau_end))
 
         # Scaling factor for position
@@ -1607,7 +1584,7 @@ class BetaBlendMotion:
         # x_orig^(k) = S × f^(k)(τ) × τ_dot^k
         derivs = []
         for k in range(max_order + 1):
-            derivs.append(S * f_derivs[k] * (original_tau_dot ** k) + (offset if k == 0 else 0))
+            derivs.append(S * f_derivs[k] * (tau_dot ** k) + (offset if k == 0 else 0))
 
         return derivs
 
