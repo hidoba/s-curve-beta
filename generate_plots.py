@@ -947,14 +947,28 @@ def plot_mid_motion_redirect():
     t_orig_after = np.linspace(t_interrupt, T1, 150)
     pos_orig, vel_orig, acc_orig = evaluate_motion(plan1, t_orig_after)
 
-    # Compute derivatives for motion 1 numerically
-    dt1 = t1[1] - t1[0] if len(t1) > 1 else 0.01
-    jerk1 = np.gradient(acc1, dt1)
-    snap1 = np.gradient(jerk1, dt1)
-    crackle1 = np.gradient(snap1, dt1)
-    pop1 = np.gradient(crackle1, dt1)
-    lock1 = np.gradient(pop1, dt1)
-    drop1 = np.gradient(lock1, dt1)
+    # Compute derivatives for motion 1 ANALYTICALLY (not numerically!)
+    # This ensures consistency with motion2's analytical derivatives
+    from scurvebeta.generalized import normalized_f_derivatives
+    tau_start = plan1['tau_start']
+    tau_end = plan1['tau_end']
+    delta_tau = tau_end - tau_start
+    delta_f = 1.0  # normalized_f(1) - normalized_f(-1) = 1
+    delta_x = plan1['x1'] - plan1['x0']
+    S = delta_x / delta_f
+    tau_dot = delta_tau / T1
+
+    # τ(t) for motion 1
+    tau1 = tau_start + delta_tau * (t1 / T1)
+    f_derivs1 = normalized_f_derivatives(tau1, max_order=8)
+
+    # x^(k) = S * f^(k)(τ) * τ_dot^k
+    jerk1 = S * f_derivs1[3] * (tau_dot ** 3)
+    snap1 = S * f_derivs1[4] * (tau_dot ** 4)
+    crackle1 = S * f_derivs1[5] * (tau_dot ** 5)
+    pop1 = S * f_derivs1[6] * (tau_dot ** 6)
+    lock1 = S * f_derivs1[7] * (tau_dot ** 7)
+    drop1 = S * f_derivs1[8] * (tau_dot ** 8)
 
     # Combined timeline
     t_combined = np.concatenate([t1, t_interrupt + t2[1:]])

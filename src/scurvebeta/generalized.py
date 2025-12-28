@@ -1641,6 +1641,8 @@ def continue_motion_blend(prev_plan, x_target, T=None, robotVmax=None, robotAmax
         snap0 = motion.snap(t_interrupt)
         crackle0 = motion.crackle(t_interrupt)
         pop0 = motion.pop(t_interrupt)
+        lock0 = motion.lock(t_interrupt)
+        drop0 = motion.drop(t_interrupt)
     elif 'smooth_motion' in prev_plan:
         motion = prev_plan['smooth_motion']
         x0 = motion.position(t_interrupt)
@@ -1650,10 +1652,12 @@ def continue_motion_blend(prev_plan, x_target, T=None, robotVmax=None, robotAmax
         snap0 = motion.snap(t_interrupt)
         crackle0 = motion.crackle(t_interrupt)
         pop0 = motion.pop(t_interrupt)
+        lock0 = motion.lock(t_interrupt)
+        drop0 = motion.drop(t_interrupt)
     else:
         # Basic linear τ motion - evaluate at t_interrupt
         x0, v0, a0 = evaluate_motion(prev_plan, t_interrupt)
-        # Compute higher derivatives from linear τ motion
+        # Compute higher derivatives from linear τ motion using ANALYTICAL derivatives
         delta_tau = tau_end - tau_start
         delta_f = normalized_f(tau_end) - normalized_f(tau_start)
         delta_x = prev_plan['x1'] - prev_plan['x0']
@@ -1662,22 +1666,18 @@ def continue_motion_blend(prev_plan, x_target, T=None, robotVmax=None, robotAmax
             S = delta_x / delta_f
             tau_dot = delta_tau / prev_T
 
-            # Compute f derivatives at current τ
-            eps = 1e-5
-            def f_pp(tau):
-                return normalized_f_second_derivative(np.clip(tau, -1+1e-10, 1-1e-10))
+            # Use analytical derivatives from normalized_f_derivatives
+            f_derivs = normalized_f_derivatives(np.array([tau_current]), max_order=8)
 
-            f_ppp = (f_pp(tau_current + eps) - f_pp(tau_current - eps)) / (2 * eps)
-            f_pppp = (f_pp(tau_current + 2*eps) - 2*f_pp(tau_current) + f_pp(tau_current - 2*eps)) / (4 * eps**2)
-            f_5 = (f_pp(tau_current + 2*eps) - 2*f_pp(tau_current + eps) + 2*f_pp(tau_current - eps) - f_pp(tau_current - 2*eps)) / (2 * eps**3)
-            f_6 = (f_pp(tau_current + 3*eps) - 3*f_pp(tau_current + eps) + 3*f_pp(tau_current - eps) - f_pp(tau_current - 3*eps)) / (8 * eps**3)
-
-            j0 = S * f_ppp * tau_dot**3
-            snap0 = S * f_pppp * tau_dot**4
-            crackle0 = S * f_5 * tau_dot**5
-            pop0 = S * f_6 * tau_dot**6
+            # x^(k) = S * f^(k)(τ) * τ_dot^k
+            j0 = S * float(f_derivs[3][0]) * tau_dot**3
+            snap0 = S * float(f_derivs[4][0]) * tau_dot**4
+            crackle0 = S * float(f_derivs[5][0]) * tau_dot**5
+            pop0 = S * float(f_derivs[6][0]) * tau_dot**6
+            lock0 = S * float(f_derivs[7][0]) * tau_dot**7
+            drop0 = S * float(f_derivs[8][0]) * tau_dot**8
         else:
-            j0 = snap0 = crackle0 = pop0 = 0
+            j0 = snap0 = crackle0 = pop0 = lock0 = drop0 = 0
 
     # Estimate T if not provided
     if T is None:
@@ -1700,6 +1700,7 @@ def continue_motion_blend(prev_plan, x_target, T=None, robotVmax=None, robotAmax
     motion = BetaBlendMotion(
         x0, v0, a0, x_target, T,
         j0=j0, snap0=snap0, crackle0=crackle0, pop0=pop0,
+        lock0=lock0, drop0=drop0,
         robotVmax=robotVmax, robotAmax=robotAmax,
         tau_current=tau_current, original_plan=prev_plan,
         mode=mode
